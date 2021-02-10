@@ -1,0 +1,54 @@
+{
+    "iothub": {
+        "iot_hub_resource_group": "ebertra-IoTHub-RG",
+        "iot_hub_name": "ebertra-IoTHub"
+    },
+    "certificates": {
+        "root_ca_cert_path": "",
+        "root_ca_cert_key_path": ""
+    },
+    "configuration": {
+        "template_config_path": "~/default-config-template.toml"
+    },
+    "edgedevices": {
+        "root": "edge-root",
+        "child": [
+            {
+                "device_id": "edge-1",
+                "child": [
+                    {
+                        "device_id": "edge-1.1",
+                        "child": []
+                    },
+                    {
+                        "device_id": "edge-1.2",
+                        "child": []
+                    }
+                ]
+            },
+            {
+                "device_id": "edge-2",
+                "child": []
+            },
+            {
+                "device_id": "edge-3",
+                "child": [
+                    {
+                        "device_id": "edge-3.1",
+                        "child": [
+                            {
+                                "device_id": "edge-3.1.1",
+                                "child": [
+                                    {
+                                        "device_id": "edge-3.1.1.1",
+                                        "child": []
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}
