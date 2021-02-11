@@ -12,11 +12,8 @@ edgedevices:
   - device_id: edge-1
     child:
     - device_id: edge-1.1
-      child: []
     - device_id: edge-1.2
-      child: []
   - device_id: edge-2
-    child: []
   - device_id: edge-3
     child:
     - device_id: edge-3.1
@@ -24,4 +21,3 @@ edgedevices:
       - device_id: edge-3.1.1
         child:
         - device_id: edge-3.1.1.1
-          child: []
