@@ -41,7 +41,7 @@ fn visualize(config: config::EdgeDevices) -> Result<()> {
     add_children(&config.child,&root_id, &mut tree)?;
 
     Layouter::new(&tree)
-        .with_file_path(std::path::Path::new("test.svg"))
+        .with_file_path(std::path::Path::new("test/visualization.svg"))
         .write()?;
 
     Ok(())
