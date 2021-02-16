@@ -1,7 +1,6 @@
-use std::fs::File;
-use std::io::Read;
+use std::fs;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 mod config;
 
@@ -13,17 +12,15 @@ fn main() -> Result<()> {
     println!("Reading {:?}", file_path);
     let is_toml = file_path.to_str().unwrap().ends_with(".toml");
 
-    let mut file = File::open(file_path)?;
-    let mut data = Vec::new();
-    file.read_to_end(&mut data)?;
+    let data = fs::read(file_path).context("Error reading file")?;
 
     let parsed: config::Config = if is_toml {
-        toml::from_slice(&data)?
+        toml::from_slice(&data).context("Error parsing data")?
     } else {
-        serde_yaml::from_slice(&data)?
+        serde_yaml::from_slice(&data).context("Error parsing data")?
     };
 
-    // println!("{:#?}", parsed);
+    // // println!("{:#?}", parsed);
     visualize(parsed.edgedevices)?;
     Ok(())
 }
@@ -38,11 +35,13 @@ fn visualize(config: config::EdgeDevices) -> Result<()> {
     let mut tree: Tree<NodeData> = TreeBuilder::new().with_node_capacity(5).build();
 
     let root_id: NodeId = tree.insert(Node::new(NodeData(config.root)), AsRoot)?;
-    add_children(&config.child,&root_id, &mut tree)?;
+    add_children(&config.child, &root_id, &mut tree)?;
 
+    fs::create_dir_all("test")?;
     Layouter::new(&tree)
         .with_file_path(std::path::Path::new("test/visualization.svg"))
-        .write()?;
+        .write()
+        .context("Cannot write visualization file.")?;
 
     Ok(())
 }
@@ -53,7 +52,10 @@ fn add_children(
     tree: &mut Tree<NodeData>,
 ) -> Result<()> {
     for child in children {
-        let new_node: NodeId = tree.insert(Node::new(NodeData(child.device_id.clone())), UnderNode(parent))?;
+        let new_node: NodeId = tree.insert(
+            Node::new(NodeData(child.device_id.clone())),
+            UnderNode(parent),
+        )?;
         add_children(&child.child, &new_node, tree)?;
     }
 
