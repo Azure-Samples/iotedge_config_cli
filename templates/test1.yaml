@@ -1,6 +1,8 @@
 iothub:
-  iot_hub_resource_group: ebertra-IoTHub-RG
-  iot_hub_name: ebertra-IoTHub
+  iot_hub_resource_group: test
+  # iot_hub_name: nested-tool-test
+  iot_hub_name: lefitche-hub-3
+  authentication_method: connection_string
 certificates:
   root_ca_cert_path: ''
   root_ca_cert_key_path: ''

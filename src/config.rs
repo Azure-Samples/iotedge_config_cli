@@ -3,7 +3,8 @@ pub struct Config {
     pub iothub: IoTHub,
     pub certificates: Certificates,
     pub configuration: Configuration,
-    pub edgedevices: EdgeDevices,
+    #[serde(rename = "edgedevices")]
+    pub root_device: RootDevice,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -24,15 +25,16 @@ pub struct Configuration {
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-pub struct EdgeDevices {
-    pub root: String,
-    #[serde(default)]
-    pub child: Vec<Layer>,
+pub struct RootDevice {
+    #[serde(rename = "root")]
+    pub device_id: String,
+    #[serde(default, rename = "child")]
+    pub children: Vec<ChildDevice>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-pub struct Layer {
+pub struct ChildDevice {
     pub device_id: String,
-    #[serde(default)]
-    pub child: Vec<Layer>,
+    #[serde(default, rename = "child")]
+    pub children: Vec<ChildDevice>,
 }
