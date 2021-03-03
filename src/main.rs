@@ -32,8 +32,8 @@ async fn main() -> Result<()> {
     };
 
     let manager = DeviceManager::new(&config, true);
-    manager.manage_devices(ManageAction::Delete).await?;
-    // manager.manage_devices(ManageAction::Create).await?;
+    manager.delete_devices().await?;
+    manager.create_devices().await?;
 
     // visualize(&config.root_device)?;
     Ok(())
@@ -49,76 +49,77 @@ impl<'a> DeviceManager<'a> {
         Self { config, verbose }
     }
 
-    pub async fn manage_devices(&self, action: ManageAction) -> Result<()> {
-        match action {
-            ManageAction::Create => {
-                // let devices_to_add = Self::flatten_devices(&self.config.root_device);
-                // self.print(&format!(
-                //     "Adding {} devices to hub {}",
-                //     devices_to_add.len(),
-                //     self.config.iothub.iot_hub_name
-                // ))
-                // .await?;
+    pub async fn create_devices(&self) -> Result<Vec<CreateResponse>> {
+        // Create devices
+        let devices_to_create = Self::flatten_devices(&self.config.root_device);
+        self.print(&format!(
+            "Creating {} devices in hub {}",
+            devices_to_create.len(),
+            self.config.iothub.iot_hub_name
+        ))
+        .await?;
 
-                // let futures = devices_to_add
-                //     .iter()
-                //     .map(|d| self.delete_device_identity(d));
+        let futures = devices_to_create
+            .iter()
+            .map(|d| self.create_device_identity(d));
 
-                // futures::future::join_all(futures)
-                //     .await
-                //     .into_iter()
-                //     .collect::<Result<Vec<()>>>()?;
+        let created_devices = futures::future::join_all(futures)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<CreateResponse>>>()?;
+        // Add parent-child relationships
+        let relationships_to_add = Self::get_relationships(&self.config.root_device);
+        self.print(&format!(
+            "Created all devices. Adding {} parent-child relationships.",
+            relationships_to_add.len()
+        ))
+        .await?;
 
-                //     self.print(&format!(
-                //         "Added {} devices to hub {}",
-                //         devices_to_add.len(),
-                //         self.config.iothub.iot_hub_name
-                //     ))
-                //     .await?;
-            }
-            ManageAction::Delete => {
-                let devices_to_delete = Self::flatten_devices(&self.config.root_device);
-                self.print(&format!(
-                    "Deleting {} devices from hub {}",
-                    devices_to_delete.len(),
-                    self.config.iothub.iot_hub_name
-                ))
-                .await?;
+        let futures = relationships_to_add
+            .iter()
+            .map(|(parent, child)| self.create_parent_child_relationship(parent, child));
 
-                let futures = devices_to_delete
-                    .iter()
-                    .map(|d| self.delete_device_identity(d));
+        futures::future::join_all(futures)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<()>>>()?;
 
-                let num_successes = futures::future::join_all(futures)
-                    .await
-                    .into_iter()
-                    .collect::<Result<Vec<bool>>>()?
-                    .into_iter()
-                    .filter(|s| *s)
-                    .count();
+        Ok(created_devices)
+    }
 
-                if num_successes == devices_to_delete.len() {
-                    self.print("Deleted all devices.").await?;
-                } else {
-                    self.print(&format!(
-                        "Successfully deleted {} devices, {} failed. For more information use the -v flag.",
-                        num_successes,
-                        num_successes - devices_to_delete.len(),
-                    ))
-                    .await?;
-                }
-            }
+    pub async fn delete_devices(&self) -> Result<()> {
+        let devices_to_delete = Self::flatten_devices(&self.config.root_device);
+        self.print(&format!(
+            "Deleting {} devices from hub {}",
+            devices_to_delete.len(),
+            self.config.iothub.iot_hub_name
+        ))
+        .await?;
+
+        let futures = devices_to_delete
+            .iter()
+            .map(|d| self.delete_device_identity(d));
+
+        let num_successes = futures::future::join_all(futures)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<bool>>>()?
+            .into_iter()
+            .filter(|s| *s)
+            .count();
+
+        if num_successes == devices_to_delete.len() {
+            self.print("Deleted all devices.").await?;
+        } else {
+            self.print(&format!(
+                "Successfully deleted {} devices, {} failed. For more information use the -v flag.",
+                num_successes,
+                num_successes - devices_to_delete.len(),
+            ))
+            .await?;
         }
 
         Ok(())
-
-        // self.manage_devices_internal(
-        //     &self.config.root_device.device_id,
-        //     None,
-        //     &self.config.root_device.children,
-        //     action,
-        // )
-        // .await
     }
 
     fn flatten_devices(device: &DeviceConfig) -> Vec<&str> {
@@ -140,93 +141,73 @@ impl<'a> DeviceManager<'a> {
         result
     }
 
-    // // https://rust-lang.github.io/async-book/07_workarounds/04_recursion.html
-    // fn manage_devices_internal<'b>(
-    //     &'b self,
-    //     device_id: &'b str,
-    //     parent_name: Option<&'b str>,
-    //     children: &'b [DeviceConfig],
-    //     action: ManageAction,
-    // ) -> BoxFuture<'b, Result<()>> {
-    //     async move {
-    //         match action {
-    //             ManageAction::Create => self.create_device_identity(device_id, parent_name).await?,
-    //             ManageAction::Delete => self.delete_device_identity(device_id).await?,
-    //         }
+    async fn create_device_identity(&self, device_id: &str) -> Result<CreateResponse> {
+        self.print_verbose(&format!(
+            "Creating device {} on hub {}",
+            device_id, self.config.iothub.iot_hub_name
+        ))
+        .await?;
 
-    //         for child in children {
-    //             self.manage_devices_internal(
-    //                 &child.device_id,
-    //                 Some(device_id),
-    //                 &child.children,
-    //                 action,
-    //             )
-    //             .await?;
-    //         }
+        let command = Self::get_command()
+            .arg("az iot hub device-identity create")
+            .args(&["--device-id", device_id])
+            .args(&["--hub-name", &self.config.iothub.iot_hub_name])
+            .arg("--edge-enabled")
+            .output()
+            .await?;
 
-    //         Ok(())
-    //     }
-    //     .boxed()
-    // }
+        if command.status.success() {
+            self.print_verbose(&format!("Successfully created {}", device_id))
+                .await?;
 
-    // async fn create_device_identity(&self, device_id: &str) -> Result<()> {
-    //     self.print(&format!(
-    //         "Making device {} on hub {}...",
-    //         device_id, self.config.iothub.iot_hub_name
-    //     ))?;
+            let created_device: CreateResponse = serde_json::from_slice(&command.stdout)?;
+            Ok(created_device)
+        } else {
+            let error = format!(
+                "Failed to create {}:\n{}\n{}\n",
+                device_id,
+                String::from_utf8_lossy(&command.stdout),
+                String::from_utf8_lossy(&command.stderr)
+            );
+            self.print_verbose(&error).await?;
 
-    //     let command = Self::get_command()
-    //         .arg("az iot hub device-identity create")
-    //         .args(&["--device-id", device_id])
-    //         .args(&["--hub-name", &self.config.iothub.iot_hub_name])
-    //         .arg("--edge-enabled")
-    //         .output()?;
+            Err(anyhow::Error::msg(error))
+        }
+    }
 
-    //     if command.status.success() {
-    //         self.print("Success!\n")?;
+    async fn create_parent_child_relationship(&self, parent: &str, child: &str) -> Result<()> {
+        self.print_verbose(&format!("Adding {} as child of parent {}.", child, parent,))
+            .await?;
 
-    //         let created_device: CreateResponse = serde_json::from_slice(&command.stdout)?;
-    //         let created_devices = self.created_devices.clone();
-    //         let mut created_devices = created_devices.lock().unwrap();
-    //         created_devices.insert(device_id.to_owned(), created_device);
-    //     } else {
-    //         self.print("Failure.\n")?;
-    //         self.print_verbose(&format!(
-    //             "{}\n{}\n",
-    //             String::from_utf8_lossy(&command.stdout),
-    //             String::from_utf8_lossy(&command.stderr)
-    //         ))?;
-    //     }
+        let command = Self::get_command()
+            .arg("az iot hub device-identity parent set")
+            .args(&["--device-id", child])
+            .args(&["--parent-device-id", parent])
+            .args(&["--hub-name", &self.config.iothub.iot_hub_name])
+            .output()
+            .await?;
 
-    //     Ok(())
-    // }
+        if command.status.success() {
+            self.print_verbose(&format!(
+                "Successfully added {} as child of parent {}.",
+                child, parent,
+            ))
+            .await?;
 
-    // async fn create_parent_child_relationship(&self, parent: &str, child: &str) -> Result<()> {
-    //     self.print_verbose(&format!(
-    //         "Adding {} as child of parent {}...",
-    //         child, parent,
-    //     ))?;
+            Ok(())
+        } else {
+            let error = format!(
+                "Failed to add {} as child of parent {}:\n{}\n{}\n",
+                child,
+                parent,
+                String::from_utf8_lossy(&command.stdout),
+                String::from_utf8_lossy(&command.stderr)
+            );
+            self.print_verbose(&error).await?;
 
-    //     let command = Self::get_command()
-    //         .arg("az iot hub device-identity parent set")
-    //         .args(&["--device-id", child])
-    //         .args(&["--parent-device-id", parent])
-    //         .args(&["--hub-name", &self.config.iothub.iot_hub_name])
-    //         .output()?;
-
-    //     if command.status.success() {
-    //         self.print_verbose("Success!\n")?;
-    //     } else {
-    //         self.print("Failure.\n")?;
-    //         self.print_verbose(&format!(
-    //             "{}\n{}\n",
-    //             String::from_utf8_lossy(&command.stdout),
-    //             String::from_utf8_lossy(&command.stderr)
-    //         ))?;
-    //     }
-
-    //     Ok(())
-    // }
+            Err(anyhow::Error::msg(error))
+        }
+    }
 
     async fn delete_device_identity(&self, device_id: &str) -> Result<bool> {
         self.print_verbose(&format!(
