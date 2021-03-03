@@ -7,6 +7,9 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+tokio =  { version = "1.2.0", features = ["macros", "rt-multi-thread", "process", "io-util"] }
+futures = "0.3.13"
+
 toml = "0.5"
 anyhow = "1.0.34"
 serde = { version = "1", features = ["derive"] }

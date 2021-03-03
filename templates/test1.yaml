@@ -9,7 +9,7 @@ certificates:
 configuration:
   template_config_path: "~/default-config-template.toml"
 edgedevices:
-  root: edge-root
+  device_id: edge-root
   child:
   - device_id: edge-1
     child:

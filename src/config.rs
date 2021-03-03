@@ -4,7 +4,7 @@ pub struct Config {
     pub certificates: Certificates,
     pub configuration: Configuration,
     #[serde(rename = "edgedevices")]
-    pub root_device: RootDevice,
+    pub root_device: DeviceConfig,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -25,16 +25,8 @@ pub struct Configuration {
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-pub struct RootDevice {
-    #[serde(rename = "root")]
+pub struct DeviceConfig {
     pub device_id: String,
     #[serde(default, rename = "child")]
-    pub children: Vec<ChildDevice>,
-}
-
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-pub struct ChildDevice {
-    pub device_id: String,
-    #[serde(default, rename = "child")]
-    pub children: Vec<ChildDevice>,
+    pub children: Vec<DeviceConfig>,
 }
