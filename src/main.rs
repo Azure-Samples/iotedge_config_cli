@@ -44,12 +44,12 @@ async fn main() -> Result<()> {
     // #[cfg(any(unix))]
     // let openssl = None;
 
-    let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
+    // let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
 
-    cert_manager.make_root_cert().await?;
-    cert_manager.make_all_device_certs().await?;
+    // cert_manager.make_root_cert().await?;
+    // cert_manager.make_all_device_certs().await?;
 
-    // visualize(&config.root_device)?;
+    visualize(&config.root_device, &file_manager).await?;
     Ok(())
 }
 
@@ -464,13 +464,17 @@ impl FileManager {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
         let log_file = base_path.join(format!("log_{}.txt", time));
+        let message = format!("Writing logs to {:?}", log_file);
         let log_file = fs::File::create(log_file).await?;
         let log_file = Arc::new(Mutex::new(log_file));
-        Ok(Self {
+
+        let this = Self {
             base_path,
             log_file,
             verbose,
-        })
+        };
+        this.print(message).await?;
+        Ok(this)
     }
 
     pub fn base_path(&self) -> &Path {
@@ -516,49 +520,53 @@ impl FileManager {
     }
 }
 
-// use id_tree::InsertBehavior::{AsRoot, UnderNode};
-// use id_tree::{Node, NodeId, Tree, TreeBuilder};
-// use id_tree_layout::{Layouter, Visualize};
+use id_tree::InsertBehavior::{AsRoot, UnderNode};
+use id_tree::{Node, NodeId, Tree, TreeBuilder};
+use id_tree_layout::{Layouter, Visualize};
 
-// struct NodeData(String);
+struct NodeData(String);
 
-// fn visualize(root: &DeviceConfig) -> Result<()> {
-//     let mut tree: Tree<NodeData> = TreeBuilder::new().build();
+async fn visualize(root: &DeviceConfig, file_manager: &FileManager) -> Result<()> {
+    let path = file_manager.base_path().join("visualization.svg");
+    file_manager
+        .print(format!("Outputing visualization to {:?}", path))
+        .await?;
 
-//     let root_id: NodeId = tree.insert(Node::new(NodeData(root.device_id.clone())), AsRoot)?;
-//     add_children(&root.children, &root_id, &mut tree)?;
+    let mut tree: Tree<NodeData> = TreeBuilder::new().build();
 
-//     fs::create_dir_all("test")?;
-//     Layouter::new(&tree)
-//         .with_file_path(std::path::Path::new("test/visualization.svg"))
-//         .write()
-//         .context("Cannot write visualization file.")?;
+    let root_id: NodeId = tree.insert(Node::new(NodeData(root.device_id.clone())), AsRoot)?;
+    add_children(&root.children, &root_id, &mut tree)?;
 
-//     Ok(())
-// }
+    Layouter::new(&tree)
+        .with_file_path(&path)
+        .write()
+        .context("Cannot write visualization file.")?;
 
-// fn add_children(
-//     children: &[DeviceConfig],
-//     parent: &NodeId,
-//     tree: &mut Tree<NodeData>,
-// ) -> Result<()> {
-//     for child in children {
-//         let new_node: NodeId = tree.insert(
-//             Node::new(NodeData(child.device_id.clone())),
-//             UnderNode(parent),
-//         )?;
-//         add_children(&child.children, &new_node, tree)?;
-//     }
+    Ok(())
+}
 
-//     Ok(())
-// }
+fn add_children(
+    children: &[DeviceConfig],
+    parent: &NodeId,
+    tree: &mut Tree<NodeData>,
+) -> Result<()> {
+    for child in children {
+        let new_node: NodeId = tree.insert(
+            Node::new(NodeData(child.device_id.clone())),
+            UnderNode(parent),
+        )?;
+        add_children(&child.children, &new_node, tree)?;
+    }
 
-// impl Visualize for NodeData {
-//     fn visualize(&self) -> std::string::String {
-//         // We simply convert the i32 value to string here.
-//         self.0.clone()
-//     }
-//     fn emphasize(&self) -> bool {
-//         false
-//     }
-// }
+    Ok(())
+}
+
+impl Visualize for NodeData {
+    fn visualize(&self) -> std::string::String {
+        // We simply convert the i32 value to string here.
+        self.0.clone()
+    }
+    fn emphasize(&self) -> bool {
+        false
+    }
+}
