@@ -22,19 +22,20 @@ async fn main() -> Result<()> {
     println!("{:#?}", args);
 
     let config = read_config(args.config).await?;
-    let file_manager = FileManager::new("test").await?;
+    let file_manager =
+        FileManager::new(args.output.unwrap_or_else(|| "test".into()), args.verbose).await?;
 
-    let manager = IoTHubDeviceManager::new(&config, &file_manager, args.verbose);
-    if args.delete {
-        manager.delete_devices().await?;
-        return Ok(());
-    }
+    // let manager = IoTHubDeviceManager::new(&config, &file_manager);
+    // if args.delete {
+    //     manager.delete_devices().await?;
+    //     return Ok(());
+    // }
 
-    let devices = manager.create_devices().await?;
-    let devices: HashMap<String, CreateResponse> = devices
-        .into_iter()
-        .map(|d| (d.device_id.clone(), d))
-        .collect();
+    // let devices = manager.create_devices().await?;
+    // let devices: HashMap<String, CreateResponse> = devices
+    //     .into_iter()
+    //     .map(|d| (d.device_id.clone(), d))
+    //     .collect();
 
     // Windows only, run
     //$Env:OPENSSL_CONF="C:\Users\Lee\source\GnuWin32\share\openssl.cnf"
@@ -43,9 +44,10 @@ async fn main() -> Result<()> {
     // #[cfg(any(unix))]
     // let openssl = None;
 
-    let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref(), true);
+    let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
 
     cert_manager.make_root_cert().await?;
+    cert_manager.make_all_device_certs().await?;
 
     // visualize(&config.root_device)?;
     Ok(())
@@ -92,7 +94,6 @@ async fn read_config(file_path: Option<PathBuf>) -> Result<Config> {
 }
 
 fn get_command() -> Command {
-    //TODO: sh for linux
     #[cfg(any(unix))]
     {
         Command::new("sh")
@@ -104,30 +105,38 @@ fn get_command() -> Command {
     }
 }
 
+fn flatten_devices(device: &DeviceConfig) -> Vec<&str> {
+    let mut result: Vec<&str> = vec![&device.device_id];
+    for child in &device.children {
+        result.append(&mut flatten_devices(&child));
+    }
+
+    result
+}
+
 struct IoTHubDeviceManager<'a> {
     config: &'a Config,
     file_manager: &'a FileManager,
-    verbose: bool,
 }
 
 impl<'a> IoTHubDeviceManager<'a> {
-    pub fn new(config: &'a Config, file_manager: &'a FileManager, verbose: bool) -> Self {
+    pub fn new(config: &'a Config, file_manager: &'a FileManager) -> Self {
         Self {
             config,
             file_manager,
-            verbose,
         }
     }
 
     pub async fn create_devices(&self) -> Result<Vec<CreateResponse>> {
         // Create devices
-        let devices_to_create = Self::flatten_devices(&self.config.root_device);
-        self.print(&format!(
-            "Creating {} devices in hub {}",
-            devices_to_create.len(),
-            self.config.iothub.iot_hub_name
-        ))
-        .await?;
+        let devices_to_create = flatten_devices(&self.config.root_device);
+        self.file_manager
+            .print(&format!(
+                "Creating {} devices in hub {}",
+                devices_to_create.len(),
+                self.config.iothub.iot_hub_name
+            ))
+            .await?;
 
         let futures = devices_to_create
             .iter()
@@ -139,11 +148,12 @@ impl<'a> IoTHubDeviceManager<'a> {
             .collect::<Result<Vec<CreateResponse>>>()?;
         // Add parent-child relationships
         let relationships_to_add = Self::get_relationships(&self.config.root_device);
-        self.print(&format!(
-            "Created all devices. Adding {} parent-child relationships.",
-            relationships_to_add.len()
-        ))
-        .await?;
+        self.file_manager
+            .print(&format!(
+                "Created all devices. Adding {} parent-child relationships.",
+                relationships_to_add.len()
+            ))
+            .await?;
 
         let futures = relationships_to_add
             .iter()
@@ -158,13 +168,14 @@ impl<'a> IoTHubDeviceManager<'a> {
     }
 
     pub async fn delete_devices(&self) -> Result<()> {
-        let devices_to_delete = Self::flatten_devices(&self.config.root_device);
-        self.print(&format!(
-            "Deleting {} devices from hub {}",
-            devices_to_delete.len(),
-            self.config.iothub.iot_hub_name
-        ))
-        .await?;
+        let devices_to_delete = flatten_devices(&self.config.root_device);
+        self.file_manager
+            .print(&format!(
+                "Deleting {} devices from hub {}",
+                devices_to_delete.len(),
+                self.config.iothub.iot_hub_name
+            ))
+            .await?;
 
         let futures = devices_to_delete
             .iter()
@@ -179,26 +190,18 @@ impl<'a> IoTHubDeviceManager<'a> {
             .count();
 
         if num_successes == devices_to_delete.len() {
-            self.print("Deleted all devices.").await?;
+            self.file_manager.print("Deleted all devices.").await?;
         } else {
-            self.print(&format!(
+            self.file_manager
+                .print(&format!(
                 "Successfully deleted {} devices, {} failed. For more information use the -v flag.",
                 num_successes,
                 num_successes - devices_to_delete.len(),
             ))
-            .await?;
+                .await?;
         }
 
         Ok(())
-    }
-
-    fn flatten_devices(device: &DeviceConfig) -> Vec<&str> {
-        let mut result: Vec<&str> = vec![&device.device_id];
-        for child in &device.children {
-            result.append(&mut Self::flatten_devices(&child));
-        }
-
-        result
     }
 
     fn get_relationships(device: &DeviceConfig) -> Vec<(&str, &str)> {
@@ -212,11 +215,12 @@ impl<'a> IoTHubDeviceManager<'a> {
     }
 
     async fn create_device_identity(&self, device_id: &str) -> Result<CreateResponse> {
-        self.print_verbose(&format!(
-            "Creating device {} on hub {}",
-            device_id, self.config.iothub.iot_hub_name
-        ))
-        .await?;
+        self.file_manager
+            .print_verbose(format!(
+                "Creating device {} on hub {}",
+                device_id, self.config.iothub.iot_hub_name
+            ))
+            .await?;
 
         let command = get_command()
             .arg("az iot hub device-identity create")
@@ -227,7 +231,8 @@ impl<'a> IoTHubDeviceManager<'a> {
             .await?;
 
         if command.status.success() {
-            self.print_verbose(&format!("Successfully created {}", device_id))
+            self.file_manager
+                .print_verbose(format!("Successfully created {}", device_id))
                 .await?;
 
             let created_device: CreateResponse = serde_json::from_slice(&command.stdout)?;
@@ -239,14 +244,15 @@ impl<'a> IoTHubDeviceManager<'a> {
                 String::from_utf8_lossy(&command.stdout),
                 String::from_utf8_lossy(&command.stderr)
             );
-            self.print_verbose(&error).await?;
+            self.file_manager.print_verbose(&error).await?;
 
             Err(anyhow::Error::msg(error))
         }
     }
 
     async fn create_parent_child_relationship(&self, parent: &str, child: &str) -> Result<()> {
-        self.print_verbose(&format!("Adding {} as child of parent {}.", child, parent,))
+        self.file_manager
+            .print_verbose(format!("Adding {} as child of parent {}.", child, parent,))
             .await?;
 
         let command = get_command()
@@ -258,11 +264,12 @@ impl<'a> IoTHubDeviceManager<'a> {
             .await?;
 
         if command.status.success() {
-            self.print_verbose(&format!(
-                "Successfully added {} as child of parent {}.",
-                child, parent,
-            ))
-            .await?;
+            self.file_manager
+                .print_verbose(format!(
+                    "Successfully added {} as child of parent {}.",
+                    child, parent,
+                ))
+                .await?;
 
             Ok(())
         } else {
@@ -273,18 +280,19 @@ impl<'a> IoTHubDeviceManager<'a> {
                 String::from_utf8_lossy(&command.stdout),
                 String::from_utf8_lossy(&command.stderr)
             );
-            self.print_verbose(&error).await?;
+            self.file_manager.print_verbose(&error).await?;
 
             Err(anyhow::Error::msg(error))
         }
     }
 
     async fn delete_device_identity(&self, device_id: &str) -> Result<bool> {
-        self.print_verbose(&format!(
-            "Deleting device {} on hub {}",
-            device_id, self.config.iothub.iot_hub_name
-        ))
-        .await?;
+        self.file_manager
+            .print_verbose(format!(
+                "Deleting device {} on hub {}",
+                device_id, self.config.iothub.iot_hub_name
+            ))
+            .await?;
 
         let command = get_command()
             .arg("az iot hub device-identity delete")
@@ -296,36 +304,22 @@ impl<'a> IoTHubDeviceManager<'a> {
         if command.status.success()
             || String::from_utf8_lossy(&command.stderr).contains("ErrorCode:DeviceNotFound;")
         {
-            self.print_verbose(&format!("Successfully deleted {}", device_id))
+            self.file_manager
+                .print_verbose(format!("Successfully deleted {}", device_id))
                 .await?;
             Ok(true)
         } else {
-            self.print_verbose(&format!(
-                "Failed to delete {}:\n{}\n{}\n",
-                device_id,
-                String::from_utf8_lossy(&command.stdout),
-                String::from_utf8_lossy(&command.stderr)
-            ))
-            .await?;
+            self.file_manager
+                .print_verbose(format!(
+                    "Failed to delete {}:\n{}\n{}\n",
+                    device_id,
+                    String::from_utf8_lossy(&command.stdout),
+                    String::from_utf8_lossy(&command.stderr)
+                ))
+                .await?;
 
             Ok(false)
         }
-    }
-
-    async fn print(&self, text: &str) -> Result<()> {
-        println!("{}", text);
-
-        self.file_manager.write_log(&format!("{}\n", text)).await?;
-        Ok(())
-    }
-
-    async fn print_verbose(&self, text: &str) -> Result<()> {
-        if self.verbose {
-            println!("{}", text);
-        }
-
-        self.file_manager.write_log(&format!("{}\n", text)).await?;
-        Ok(())
     }
 }
 
@@ -333,7 +327,6 @@ struct CertManager<'a> {
     config: &'a Config,
     file_manager: &'a FileManager,
     openssl_path: Option<&'a Path>,
-    verbose: bool,
 }
 
 impl<'a> CertManager<'a> {
@@ -341,20 +334,38 @@ impl<'a> CertManager<'a> {
         config: &'a Config,
         file_manager: &'a FileManager,
         openssl_path: Option<&'a Path>,
-        verbose: bool,
     ) -> Self {
         Self {
             config,
             file_manager,
             openssl_path,
-            verbose,
         }
     }
 
-    async fn make_root_cert(&self) -> Result<()> {
-        let cert_folder = self.file_manager.get_folder("certs").await?;
-        println!("asdfsdf");
+    async fn make_all_device_certs(&self) -> Result<()> {
+        let certs_to_make = flatten_devices(&self.config.root_device);
+        self.file_manager
+            .print(&format!(
+                "Creating certs for {} devices",
+                certs_to_make.len(),
+            ))
+            .await?;
 
+        let futures = certs_to_make.iter().map(|d| self.make_device_cert(d));
+
+        let num_successes = futures::future::join_all(futures)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<()>>>()?;
+
+        self.file_manager.print("Created all device certs.").await?;
+
+        Ok(())
+    }
+
+    async fn make_root_cert(&self) -> Result<()> {
+        self.file_manager.print("Making Root CA.").await?;
+        let cert_folder = self.file_manager.get_folder("certs").await?;
         let command = self
             .openssl_path
             .map_or_else(|| Command::new("openssl"), Command::new)
@@ -364,18 +375,72 @@ impl<'a> CertManager<'a> {
             ])
             .args(&[
                 OsStr::new("-keyout"),
-                cert_folder.join("key.pem").as_os_str(),
+                cert_folder.join("root.key.pem").as_os_str(),
             ])
-            .args(&[OsStr::new("-out"), cert_folder.join("cert.pem").as_os_str()])
+            .args(&[OsStr::new("-out"), cert_folder.join("root.pem").as_os_str()])
             .args(&["-subj", "/CN=Azure_IoT_Nested_Cert"])
-            .spawn()?;
-        // .await?;
+            .output()
+            .await?;
 
-        // println!(
-        //     "\n{}\n{}\n",
-        //     String::from_utf8_lossy(&command.stdout),
-        //     String::from_utf8_lossy(&command.stderr)
-        // );
+        self.file_manager
+            .print_verbose(format!(
+                "{}{}",
+                String::from_utf8_lossy(&command.stdout),
+                String::from_utf8_lossy(&command.stderr)
+            ))
+            .await?;
+
+        self.file_manager
+            .print(format!(
+                "Successfully made Root CA {:?}.",
+                cert_folder.join("root.pem")
+            ))
+            .await?;
+
+        Ok(())
+    }
+
+    async fn make_device_cert(&self, device_id: &str) -> Result<()> {
+        self.file_manager
+            .print_verbose(format!("Making device CA for {}.", device_id))
+            .await?;
+
+        // TODO: make cert correctly
+        let device_folder = self.file_manager.get_folder(device_id).await?;
+        let command = self
+            .openssl_path
+            .map_or_else(|| Command::new("openssl"), Command::new)
+            .arg("req")
+            .args(&[
+                "-x509", "-new", "-newkey", "rsa:4096", "-days", "365", "-nodes",
+            ])
+            .args(&[
+                OsStr::new("-keyout"),
+                device_folder.join("key.pem").as_os_str(),
+            ])
+            .args(&[
+                OsStr::new("-out"),
+                device_folder.join("cert.pem").as_os_str(),
+            ])
+            .args(&["-subj", "/CN=Azure_IoT_Nested_Cert"])
+            // .spawn()?;
+            .output()
+            .await?;
+
+        self.file_manager
+            .print_verbose(format!(
+                "{}{}",
+                String::from_utf8_lossy(&command.stdout),
+                String::from_utf8_lossy(&command.stderr)
+            ))
+            .await?;
+
+        self.file_manager
+            .print_verbose(format!(
+                "Successfully made CA {:?}.",
+                device_folder.join("cert.pem")
+            ))
+            .await?;
 
         Ok(())
     }
@@ -384,10 +449,14 @@ use std::path::{Path, PathBuf};
 struct FileManager {
     base_path: PathBuf,
     log_file: Arc<Mutex<fs::File>>,
+    verbose: bool,
 }
 
 impl FileManager {
-    async fn new(base_path: &str) -> Result<Self> {
+    async fn new<P>(base_path: P, verbose: bool) -> Result<Self>
+    where
+        P: Into<PathBuf>,
+    {
         let base_path: PathBuf = base_path.into();
         fs::create_dir_all(&base_path).await?;
 
@@ -400,17 +469,12 @@ impl FileManager {
         Ok(Self {
             base_path,
             log_file,
+            verbose,
         })
     }
 
     pub fn base_path(&self) -> &Path {
         &self.base_path
-    }
-    async fn write_log(&self, text: &str) -> Result<()> {
-        let log_file = self.log_file.clone();
-        let mut log_file = log_file.lock().await;
-        log_file.write_all(text.as_bytes()).await?;
-        Ok(())
     }
 
     async fn get_folder(&self, path: &str) -> Result<PathBuf> {
@@ -420,6 +484,35 @@ impl FileManager {
         fs::create_dir_all(&folder).await?;
 
         Ok(folder)
+    }
+
+    async fn print<S>(&self, text: S) -> Result<()>
+    where
+        S: AsRef<str>,
+    {
+        println!("{}", text.as_ref());
+
+        self.write_log(&format!("{}\n", text.as_ref())).await?;
+        Ok(())
+    }
+
+    async fn print_verbose<S>(&self, text: S) -> Result<()>
+    where
+        S: AsRef<str>,
+    {
+        if self.verbose {
+            println!("{}", text.as_ref());
+        }
+
+        self.write_log(&format!("{}\n", text.as_ref())).await?;
+        Ok(())
+    }
+
+    async fn write_log(&self, text: &str) -> Result<()> {
+        let log_file = self.log_file.clone();
+        let mut log_file = log_file.lock().await;
+        log_file.write_all(text.as_bytes()).await?;
+        Ok(())
     }
 }
 
