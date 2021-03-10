@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use structopt::StructOpt;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -17,25 +18,32 @@ use hub_responses::*;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = read_config().await?;
+    let args: Arguments = StructOpt::from_args();
+    println!("{:#?}", args);
+
+    let config = read_config(args.config).await?;
     let file_manager = FileManager::new("test").await?;
 
-    // let manager = IoTHubDeviceManager::new(&config, &file_manager, true);
-    // manager.delete_devices().await?;
-    // let devices = manager.create_devices().await?;
-    // let devices: HashMap<String, CreateResponse> = devices
-    //     .into_iter()
-    //     .map(|d| (d.device_id.clone(), d))
-    //     .collect();
+    let manager = IoTHubDeviceManager::new(&config, &file_manager, args.verbose);
+    if args.delete {
+        manager.delete_devices().await?;
+        return Ok(());
+    }
+
+    let devices = manager.create_devices().await?;
+    let devices: HashMap<String, CreateResponse> = devices
+        .into_iter()
+        .map(|d| (d.device_id.clone(), d))
+        .collect();
 
     // Windows only, run
     //$Env:OPENSSL_CONF="C:\Users\Lee\source\GnuWin32\share\openssl.cnf"
-    #[cfg(any(windows))]
-    let openssl = Some(Path::new(r"C:\Users\Lee\source\GnuWin32\bin\openssl.exe"));
-    #[cfg(any(unix))]
-    let openssl = None;
+    // #[cfg(any(windows))]
+    // let openssl = Some(Path::new(r"C:\Users\Lee\source\GnuWin32\bin\openssl.exe"));
+    // #[cfg(any(unix))]
+    // let openssl = None;
 
-    let cert_manager = CertManager::new(&config, &file_manager, openssl, true);
+    let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref(), true);
 
     cert_manager.make_root_cert().await?;
 
@@ -43,10 +51,31 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn read_config() -> Result<Config> {
-    let file_path = std::env::args_os()
-        .nth(1)
-        .unwrap_or_else(|| "./templates/test1.yaml".into());
+#[derive(StructOpt, Debug)]
+struct Arguments {
+    /// Verbose: gives more detailed output
+    #[structopt(short, long)]
+    verbose: bool,
+
+    /// Delete: deletes devices in hub instead fo creating them
+    #[structopt(short, long)]
+    delete: bool,
+
+    /// Output: path to create directory at. Default: `./nested`
+    #[structopt(short, long)]
+    output: Option<PathBuf>,
+
+    /// Config: path to config file. Default: `./nested_config.yaml`
+    #[structopt(short, long)]
+    config: Option<PathBuf>,
+
+    /// Path to openssl executable. Only needed if `openssl` is not in PATH.
+    #[structopt(long)]
+    openssl_path: Option<PathBuf>,
+}
+
+async fn read_config(file_path: Option<PathBuf>) -> Result<Config> {
+    let file_path = file_path.unwrap_or_else(|| "./templates/test1.yaml".into());
 
     println!("Reading {:?}", file_path);
     let is_toml = file_path.to_str().unwrap().ends_with(".toml");
