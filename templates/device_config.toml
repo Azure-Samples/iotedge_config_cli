@@ -1,0 +1,8 @@
+[provisioning]
+source = "manual"
+iothub_hostname = ""
+device_id = ""
+
+[provisioning.authentication]
+method = "sas"
+device_id_pk = { value = "" }

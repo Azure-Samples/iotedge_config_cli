@@ -1,6 +1,4 @@
-use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::io::{self, Write};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -9,6 +7,8 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+
+use aziotctl_common::config::super_config as device_config;
 
 mod config;
 mod hub_responses;
@@ -25,17 +25,13 @@ async fn main() -> Result<()> {
     let file_manager =
         FileManager::new(args.output.unwrap_or_else(|| "test".into()), args.verbose).await?;
 
-    // let manager = IoTHubDeviceManager::new(&config, &file_manager);
-    // if args.delete {
-    //     manager.delete_devices().await?;
-    //     return Ok(());
-    // }
+    let hub_manager = IoTHubDeviceManager::new(&config, &file_manager);
+    if args.delete {
+        hub_manager.delete_devices().await?;
+        return Ok(());
+    }
 
-    // let devices = manager.create_devices().await?;
-    // let devices: HashMap<String, CreateResponse> = devices
-    //     .into_iter()
-    //     .map(|d| (d.device_id.clone(), d))
-    //     .collect();
+    let devices = hub_manager.create_devices().await?;
 
     // Windows only, run
     //$Env:OPENSSL_CONF="C:\Users\Lee\source\GnuWin32\share\openssl.cnf"
@@ -49,7 +45,10 @@ async fn main() -> Result<()> {
     // cert_manager.make_root_cert().await?;
     // cert_manager.make_all_device_certs().await?;
 
-    visualize(&config.root_device, &file_manager).await?;
+    let config_manager = DeviceConfigManager::new(&config, &file_manager);
+    config_manager.make_all_device_configs(&devices).await?;
+
+    // visualize(&config.root_device, &file_manager).await?;
     Ok(())
 }
 
@@ -93,15 +92,15 @@ async fn read_config(file_path: Option<PathBuf>) -> Result<Config> {
     Ok(config)
 }
 
-fn get_command() -> Command {
+fn get_command(command: &str) -> Command {
     #[cfg(any(unix))]
     {
-        Command::new("sh")
+        Command::new(command)
     }
 
     #[cfg(any(windows))]
     {
-        Command::new("powershell.exe")
+        Command::new("powershell.exe").arg(command)
     }
 }
 
@@ -222,8 +221,8 @@ impl<'a> IoTHubDeviceManager<'a> {
             ))
             .await?;
 
-        let command = get_command()
-            .arg("az iot hub device-identity create")
+        let command = get_command("az")
+            .arg("iot hub device-identity create")
             .args(&["--device-id", device_id])
             .args(&["--hub-name", &self.config.iothub.iot_hub_name])
             .arg("--edge-enabled")
@@ -255,8 +254,8 @@ impl<'a> IoTHubDeviceManager<'a> {
             .print_verbose(format!("Adding {} as child of parent {}.", child, parent,))
             .await?;
 
-        let command = get_command()
-            .arg("az iot hub device-identity parent set")
+        let command = get_command("az")
+            .arg("iot hub device-identity parent set")
             .args(&["--device-id", child])
             .args(&["--parent-device-id", parent])
             .args(&["--hub-name", &self.config.iothub.iot_hub_name])
@@ -294,8 +293,8 @@ impl<'a> IoTHubDeviceManager<'a> {
             ))
             .await?;
 
-        let command = get_command()
-            .arg("az iot hub device-identity delete")
+        let command = get_command("az")
+            .arg("iot hub device-identity delete")
             .args(&["--device-id", device_id])
             .args(&["--hub-name", &self.config.iothub.iot_hub_name])
             .output()
@@ -342,7 +341,7 @@ impl<'a> CertManager<'a> {
         }
     }
 
-    async fn make_all_device_certs(&self) -> Result<()> {
+    pub async fn make_all_device_certs(&self) -> Result<()> {
         let certs_to_make = flatten_devices(&self.config.root_device);
         self.file_manager
             .print(&format!(
@@ -353,7 +352,7 @@ impl<'a> CertManager<'a> {
 
         let futures = certs_to_make.iter().map(|d| self.make_device_cert(d));
 
-        let num_successes = futures::future::join_all(futures)
+        futures::future::join_all(futures)
             .await
             .into_iter()
             .collect::<Result<Vec<()>>>()?;
@@ -363,7 +362,7 @@ impl<'a> CertManager<'a> {
         Ok(())
     }
 
-    async fn make_root_cert(&self) -> Result<()> {
+    pub async fn make_root_cert(&self) -> Result<()> {
         self.file_manager.print("Making Root CA.").await?;
         let cert_folder = self.file_manager.get_folder("certs").await?;
         let command = self
@@ -445,6 +444,87 @@ impl<'a> CertManager<'a> {
         Ok(())
     }
 }
+
+struct DeviceConfigManager<'a> {
+    config: &'a Config,
+    file_manager: &'a FileManager,
+}
+
+impl<'a> DeviceConfigManager<'a> {
+    pub fn new(config: &'a Config, file_manager: &'a FileManager) -> Self {
+        Self {
+            config,
+            file_manager,
+        }
+    }
+
+    pub async fn make_all_device_configs(&self, devices: &[CreateResponse]) -> Result<()> {
+        self.file_manager
+            .print(&format!(
+                "Creating configuration files based on {:?} for {} devices",
+                self.config.configuration.template_config_path,
+                devices.len(),
+            ))
+            .await?;
+
+        let base_config: Vec<u8> = if let Some(p) = &self.config.configuration.template_config_path
+        {
+            fs::read(p).await?
+        } else {
+            Vec::new()
+        };
+        let mut base_config: device_config::Config = toml::from_slice(&base_config)?;
+
+        self.file_manager
+            .print_verbose(format!("Base Config File: {:#?}", base_config))
+            .await?;
+
+        for device in devices {
+            self.make_device_config(&device, &mut base_config).await?;
+        }
+
+        self.file_manager.print("Created config files.").await?;
+
+        Ok(())
+    }
+
+    async fn make_device_config(
+        &self,
+        device: &CreateResponse,
+        config: &mut device_config::Config,
+    ) -> Result<()> {
+        let private_key: Vec<u8> = device
+            .authentication
+            .symmetric_key
+            .primary_key
+            .clone()
+            .into();
+
+        // TODO: add support for x509
+        config.provisioning.provisioning = device_config::ProvisioningType::Manual {
+            inner: device_config::ManualProvisioning::Explicit {
+                iothub_hostname: self.config.iothub.iot_hub_name.clone(), //TODO: get hostname not name
+                device_id: device.device_id.clone(),
+                authentication: device_config::ManualAuthMethod::SharedPrivateKey {
+                    device_id_pk: device_config::SymmetricKey::Inline { value: private_key },
+                },
+            },
+        };
+
+        let file = self.file_manager.get_folder(&device.device_id).await?;
+        let config = toml::to_string(config)?;
+        self.file_manager
+            .print_verbose(format!(
+                "Writing config for {} to {:?}\n{}",
+                device.device_id, file, config
+            ))
+            .await?;
+
+        fs::write(file, config).await?;
+        Ok(())
+    }
+}
+
 use std::path::{Path, PathBuf};
 struct FileManager {
     base_path: PathBuf,
@@ -452,6 +532,13 @@ struct FileManager {
     verbose: bool,
 }
 
+use std::io::prelude::*;
+use std::io::{Seek, Write};
+use std::iter::Iterator;
+use zip::write::FileOptions;
+
+use std::fs::File;
+use walkdir::{DirEntry, WalkDir};
 impl FileManager {
     async fn new<P>(base_path: P, verbose: bool) -> Result<Self>
     where
@@ -488,6 +575,67 @@ impl FileManager {
         fs::create_dir_all(&folder).await?;
 
         Ok(folder)
+    }
+
+    // from https://github.com/zip-rs/zip/blob/5290d687b287a444f61bba32605423f01fd5b1c3/examples/write_dir.rs
+    async fn zip_dir<P>(&self, dir: P) -> Result<()>
+    where
+        P: AsRef<Path> + Clone,
+    {
+        let mut dest = dir.as_ref().to_path_buf();
+        dest.set_extension(".zip");
+
+        let file = File::create(&dest)?;
+
+        let walkdir = WalkDir::new(dir.clone());
+        let it = walkdir.into_iter();
+
+        self.zip_dir_inner(&mut it.filter_map(|e| e.ok()), dir, file)?;
+
+        Ok(())
+    }
+
+    fn zip_dir_inner<T, P>(
+        &self,
+        it: &mut dyn Iterator<Item = DirEntry>,
+        prefix: P,
+        writer: T,
+    ) -> zip::result::ZipResult<()>
+    where
+        T: Write + Seek,
+        P: AsRef<Path> + Clone,
+    {
+        let mut zip = zip::ZipWriter::new(writer);
+        let options = FileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o755);
+
+        let mut buffer = Vec::new();
+        for entry in it {
+            let path = entry.path();
+            let name = path.strip_prefix(prefix.clone()).unwrap();
+
+            // Write file or directory explicitly
+            // Some unzip tools unzip files with directory paths correctly, some do not!
+            if path.is_file() {
+                println!("adding file {:?} as {:?} ...", path, name);
+                #[allow(deprecated)]
+                zip.start_file_from_path(name, options)?;
+                let mut f = File::open(path)?;
+
+                f.read_to_end(&mut buffer)?;
+                zip.write_all(&*buffer)?;
+                buffer.clear();
+            } else if name.as_os_str().len() != 0 {
+                // Only if not root! Avoids path spec / warning
+                // and mapname conversion failed error on unzip
+                println!("adding dir {:?} as {:?} ...", path, name);
+                #[allow(deprecated)]
+                zip.add_directory_from_path(name, options)?;
+            }
+        }
+        zip.finish()?;
+        Result::Ok(())
     }
 
     async fn print<S>(&self, text: S) -> Result<()>
