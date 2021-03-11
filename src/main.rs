@@ -24,8 +24,7 @@ use hub_responses::*;
 async fn main() -> Result<()> {
     let args: Arguments = StructOpt::from_args();
     let config = read_config(args.config).await?;
-    let base_path = args.output.unwrap_or_else(|| "test".into());
-    let file_manager = FileManager::new(base_path, args.verbose).await?;
+    let file_manager = FileManager::new(args.output, args.verbose).await?;
     let hub_manager = IoTHubDeviceManager::new(&config, &file_manager);
     let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
     let config_manager = DeviceConfigManager::new(&config, &file_manager);
@@ -56,11 +55,18 @@ async fn main() -> Result<()> {
         .make_all_device_configs(&created_devices)
         .await?;
 
-    file_manager.print("Zipping all device folders.").await?;
-    for device in device_ids {
-        file_manager
-            .zip_dir(file_manager.get_folder(device).await?)
-            .await?
+    if args.zip_options != ZipOptions::None {
+        file_manager.print("Zipping all device folders.").await?;
+        for device in device_ids {
+            file_manager
+                .zip_dir(file_manager.get_folder(device).await?)
+                .await?
+        }
+
+        if args.zip_options == ZipOptions::All {
+            file_manager.print("Zipping output folder.").await?;
+            file_manager.zip_dir(file_manager.base_path()).await?;
+        }
     }
 
     Ok(())
@@ -84,22 +90,50 @@ struct Arguments {
     #[structopt(long)]
     visualize: bool,
 
-    /// Output: path to create directory at. Default: `./nested`
-    #[structopt(short, long)]
-    output: Option<PathBuf>,
+    /// Output: path to create directory at.
+    #[structopt(short, long, default_value = "./nested")]
+    output: PathBuf,
 
-    /// Config: path to config file. Default: `./nested_config.yaml`
-    #[structopt(short, long)]
-    config: Option<PathBuf>,
+    /// Config: path to config file.
+    #[structopt(short, long, default_value = "./nested_config.yaml")]
+    config: PathBuf,
 
-    /// Path to openssl executable. Only needed if `openssl` is not in PATH.
+    /// Openssl Path: Path to openssl executable. Only needed if `openssl` is not in PATH.
     #[structopt(long)]
     openssl_path: Option<PathBuf>,
+
+    /// Zip Options: what should be zipped: all, devices, or none.
+    #[structopt(long, default_value = "devices")]
+    zip_options: ZipOptions,
 }
 
-async fn read_config(file_path: Option<PathBuf>) -> Result<Config> {
-    let file_path = file_path.unwrap_or_else(|| "./templates/test1.yaml".into());
+#[derive(StructOpt, Debug, PartialEq)]
+enum ZipOptions {
+    None,
+    Devices,
+    All,
+}
 
+impl std::str::FromStr for ZipOptions {
+    type Err = anyhow::Error;
+    fn from_str(string: &str) -> Result<Self> {
+        let result = match string.to_lowercase().as_str() {
+            "all" => Self::All,
+            "devices" => Self::Devices,
+            "none" => Self::None,
+            _ => {
+                return Err(anyhow::Error::msg(format!(
+                    "Did not recognize zip argument: {}",
+                    string
+                )))
+            }
+        };
+
+        Ok(result)
+    }
+}
+
+async fn read_config(file_path: PathBuf) -> Result<Config> {
     println!("Reading {:?}", file_path);
     let is_toml = file_path.to_str().unwrap().ends_with(".toml");
 
@@ -564,20 +598,20 @@ impl<'a> DeviceConfigManager<'a> {
     }
 }
 
+use std::io::prelude::*;
+use std::io::{Seek, Write};
+use std::iter::Iterator;
 use std::path::{Path, PathBuf};
+
+use walkdir::{DirEntry, WalkDir};
+use zip::write::FileOptions;
+
 struct FileManager {
     base_path: PathBuf,
     log_file: Arc<Mutex<fs::File>>,
     verbose: bool,
 }
 
-use std::io::prelude::*;
-use std::io::{Seek, Write};
-use std::iter::Iterator;
-use zip::write::FileOptions;
-
-use std::fs::File;
-use walkdir::{DirEntry, WalkDir};
 impl FileManager {
     async fn new<P>(base_path: P, verbose: bool) -> Result<Self>
     where
@@ -627,7 +661,7 @@ impl FileManager {
         dest.set_extension("zip");
 
         // Note zipping is done synchronously since the zip lib is sync
-        let file = File::create(&dest)?;
+        let file = std::fs::File::create(&dest)?;
 
         let walkdir = WalkDir::new(dir.clone());
         let it = walkdir.into_iter();
@@ -663,7 +697,7 @@ impl FileManager {
             if path.is_file() {
                 #[allow(deprecated)]
                 zip.start_file_from_path(name, options)?;
-                let mut f = File::open(path)?;
+                let mut f = std::fs::File::open(path)?;
 
                 f.read_to_end(&mut buffer)?;
                 zip.write_all(&*buffer)?;
