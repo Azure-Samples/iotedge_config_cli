@@ -13,10 +13,22 @@ edgedevices:
     - device_id: edge-A
       child:
         - device_id: edge-AA
+          child:
+          - device_id: edge-AAA
+            child:
+            - device_id: edge-AAAA
         - device_id: edge-AB
           child:
             - device_id: edge-ABA
     - device_id: edge-B
+      child:
+        - device_id: edge-BA
+          child:
+          - device_id: edge-BAA
+          - device_id: edge-BAB
+          - device_id: edge-BAC
+        - device_id: edge-BB
+        - device_id: edge-BC
     - device_id: edge-C
       child:
         - device_id: edge-CA
@@ -24,3 +36,8 @@ edgedevices:
             - device_id: edge-CAA
               child:
                 - device_id: edge-CAAA
+                  child:
+                  - device_id: edge-CAAAA
+                  - device_id: edge-CAAAB
+                  - device_id: edge-CAAAC
+            - device_id: edge-CAB

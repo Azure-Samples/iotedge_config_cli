@@ -200,7 +200,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             .print(&format!(
                 "Creating {} devices in hub {}",
                 devices_to_create.len(),
-                self.config.iothub.iot_hub_name
+                self.config.iothub.iothub_name
             ))
             .await?;
 
@@ -242,7 +242,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             .print(&format!(
                 "Deleting {} devices from hub {}",
                 devices_to_delete.len(),
-                self.config.iothub.iot_hub_name
+                self.config.iothub.iothub_name
             ))
             .await?;
 
@@ -287,7 +287,7 @@ impl<'a> IoTHubDeviceManager<'a> {
         self.file_manager
             .print_verbose(format!(
                 "Creating device {} on hub {}",
-                device_id, self.config.iothub.iot_hub_name
+                device_id, self.config.iothub.iothub_name
             ))
             .await?;
 
@@ -296,7 +296,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             "--device-id",
             device_id,
             "--hub-name",
-            &self.config.iothub.iot_hub_name,
+            &self.config.iothub.iothub_name,
             "--edge-enabled",
         ];
         let command = Self::run_az_command(args).output().await?;
@@ -332,7 +332,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             "--parent-device-id",
             parent,
             "--hub-name",
-            &self.config.iothub.iot_hub_name,
+            &self.config.iothub.iothub_name,
         ];
         let command = Self::run_az_command(args).output().await?;
         if command.status.success() {
@@ -362,7 +362,7 @@ impl<'a> IoTHubDeviceManager<'a> {
         self.file_manager
             .print_verbose(format!(
                 "Deleting device {} on hub {}",
-                device_id, self.config.iothub.iot_hub_name
+                device_id, self.config.iothub.iothub_name
             ))
             .await?;
 
@@ -371,7 +371,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             "--device-id",
             device_id,
             "--hub-name",
-            &self.config.iothub.iot_hub_name,
+            &self.config.iothub.iothub_name,
         ];
 
         let command = Self::run_az_command(args)
@@ -658,7 +658,7 @@ impl<'a> DeviceConfigManager<'a> {
         let provisioning = aziot_config::Provisioning {
             source: "manual".to_owned(),
             device_id: device.device_id.clone(),
-            iothub_hostname: self.config.iothub.iot_hub_name.clone(), //TODO: get hostname not name
+            iothub_hostname: self.config.iothub.iothub_hostname.clone(),
             authentication: aziot_config::Authentication {
                 method: "sas".to_owned(),
                 device_id_pk: aziot_config::DeviceIdPk {

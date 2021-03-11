@@ -9,8 +9,9 @@ pub struct Config {
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct IoTHub {
-    pub iot_hub_resource_group: String,
-    pub iot_hub_name: String,
+    pub iothub_hostname: String,
+    pub iothub_name: String,
+    pub authentication_method: String, //TODO: Make Enum
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
