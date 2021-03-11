@@ -655,10 +655,11 @@ impl FileManager {
     where
         P: AsRef<Path> + Clone,
     {
-        self.print_verbose(format!("Zipping {:?}", dir.as_ref()))
-            .await?;
         let mut dest = dir.as_ref().to_path_buf();
-        dest.set_extension("zip");
+        dest.set_file_name(&format!("{}.zip", dest.file_name().unwrap().to_string_lossy()));
+
+        self.print_verbose(format!("Zipping {:?} into {:?}", dir.as_ref(), dest))
+            .await?;
 
         // Note zipping is done synchronously since the zip lib is sync
         let file = std::fs::File::create(&dest)?;
