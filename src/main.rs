@@ -23,11 +23,15 @@ use hub_responses::*;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Arguments = StructOpt::from_args();
+    let args_log = format!("Using options:\n{:#?}", args);
+
     let config = read_config(args.config).await?;
     let file_manager = FileManager::new(args.output, args.verbose).await?;
     let hub_manager = IoTHubDeviceManager::new(&config, &file_manager);
     let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
     let config_manager = DeviceConfigManager::new(&config, &file_manager);
+
+    file_manager.print_verbose(args_log).await?;
 
     visualize(&config.root_device, &file_manager).await?;
     if args.visualize {
