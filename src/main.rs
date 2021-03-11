@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use chrono::Local;
 use structopt::StructOpt;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -582,12 +583,6 @@ impl<'a> DeviceConfigManager<'a> {
         };
         config.provisioning = Some(provisioning);
 
-        // config.provisioning.source = "manual".to_owned();
-        // config.provisioning.device_id = device.device_id.clone();
-        // config.provisioning.authentication.method = "sas".to_owned();
-        // config.provisioning.authentication.device_id_pk.value =
-        //     device.authentication.symmetric_key.primary_key.clone();
-
         let file = self
             .file_manager
             .get_folder(&device.device_id)
@@ -628,9 +623,7 @@ impl FileManager {
         let base_path: PathBuf = base_path.into();
         fs::create_dir_all(&base_path).await?;
 
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs();
+        let time = Local::now().format("%Y-%m-%d_%H-%M-%S");
         let log_file = base_path.join(format!("log_{}.txt", time));
         let message = format!("Writing logs to {:?}", log_file);
         let log_file = fs::File::create(log_file).await?;
@@ -731,7 +724,12 @@ impl FileManager {
     {
         println!("{}", text.as_ref());
 
-        self.write_log(&format!("{}\n", text.as_ref())).await?;
+        self.write_log(&format!(
+            "{} {}\n",
+            Local::now().format("%Y-%m-%d %H:%M:%S"),
+            text.as_ref()
+        ))
+        .await?;
         Ok(())
     }
 
@@ -743,7 +741,12 @@ impl FileManager {
             println!("{}", text.as_ref());
         }
 
-        self.write_log(&format!("{}\n", text.as_ref())).await?;
+        self.write_log(&format!(
+            "{} {}\n",
+            Local::now().format("%Y-%m-%d %H:%M:%S"),
+            text.as_ref()
+        ))
+        .await?;
         Ok(())
     }
 
