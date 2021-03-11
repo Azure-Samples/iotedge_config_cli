@@ -22,8 +22,6 @@ serde_yaml = "0.8"
 id_tree = "1.7.0"
 id_tree_layout = "2.0.1"
 
-aziotctl-common = { git = "https://github.com/Azure/iot-identity-service", branch = "main" }
-
 zip = "0.5"
 walkdir = "2"
 

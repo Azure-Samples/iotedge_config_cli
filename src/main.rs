@@ -8,8 +8,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use aziotctl_common::config::super_config as device_config;
-
+mod aziot_config;
 mod config;
 mod hub_responses;
 
@@ -43,6 +42,9 @@ async fn main() -> Result<()> {
     }
 
     let created_devices = hub_manager.create_devices().await?;
+    if args.create {
+        return Ok(());
+    }
     let device_ids: Vec<&str> = created_devices
         .iter()
         .map(|d| d.device_id.as_str())
@@ -81,6 +83,10 @@ struct Arguments {
     /// Delete: deletes devices in hub instead of creating them
     #[structopt(short, long)]
     delete: bool,
+
+    /// Create: Only creates devices in ioh hub, does not make certs or configs
+    #[structopt(long)]
+    create: bool,
 
     /// Force: tries to delete devices in hub before creating new ones
     #[structopt(short, long)]
@@ -530,26 +536,27 @@ impl<'a> DeviceConfigManager<'a> {
     pub async fn make_all_device_configs(&self, devices: &[CreateResponse]) -> Result<()> {
         self.file_manager
             .print(&format!(
-                "Creating configuration files based on {:?} for {} devices",
+                "Creating configuration files based on {:?} for {} devices.",
                 self.config.configuration.template_config_path,
                 devices.len(),
             ))
             .await?;
 
-        let base_config: Vec<u8> = if let Some(p) = &self.config.configuration.template_config_path
-        {
-            fs::read(p).await?
-        } else {
-            Vec::new()
-        };
-        let mut base_config: device_config::Config = toml::from_slice(&base_config)?;
+        let base_config: aziot_config::AziotConfig =
+            if let Some(p) = &self.config.configuration.template_config_path {
+                let base_config = fs::read(p).await?;
+                toml::from_slice(&base_config)?
+            } else {
+                Default::default()
+            };
 
         self.file_manager
             .print_verbose(format!("Base Config File: {:#?}", base_config))
             .await?;
 
         for device in devices {
-            self.make_device_config(&device, &mut base_config).await?;
+            self.make_device_config(&device, base_config.clone())
+                .await?;
         }
 
         self.file_manager.print("Created config files.").await?;
@@ -560,32 +567,33 @@ impl<'a> DeviceConfigManager<'a> {
     async fn make_device_config(
         &self,
         device: &CreateResponse,
-        config: &mut device_config::Config,
+        mut config: aziot_config::AziotConfig,
     ) -> Result<()> {
-        let private_key: Vec<u8> = device
-            .authentication
-            .symmetric_key
-            .primary_key
-            .clone()
-            .into();
-
-        // TODO: add support for x509
-        config.provisioning.provisioning = device_config::ProvisioningType::Manual {
-            inner: device_config::ManualProvisioning::Explicit {
-                iothub_hostname: self.config.iothub.iot_hub_name.clone(), //TODO: get hostname not name
-                device_id: device.device_id.clone(),
-                authentication: device_config::ManualAuthMethod::SharedPrivateKey {
-                    device_id_pk: device_config::SymmetricKey::Inline { value: private_key },
+        let provisioning = aziot_config::Provisioning {
+            source: "manual".to_owned(),
+            device_id: device.device_id.clone(),
+            iothub_hostname: self.config.iothub.iot_hub_name.clone(), //TODO: get hostname not name
+            authentication: aziot_config::Authentication {
+                method: "sas".to_owned(),
+                device_id_pk: aziot_config::DeviceIdPk {
+                    value: device.authentication.symmetric_key.primary_key.clone(),
                 },
             },
         };
+        config.provisioning = Some(provisioning);
+
+        // config.provisioning.source = "manual".to_owned();
+        // config.provisioning.device_id = device.device_id.clone();
+        // config.provisioning.authentication.method = "sas".to_owned();
+        // config.provisioning.authentication.device_id_pk.value =
+        //     device.authentication.symmetric_key.primary_key.clone();
 
         let file = self
             .file_manager
             .get_folder(&device.device_id)
             .await?
             .join("config.toml");
-        let config = toml::to_string(config)?;
+        let config = toml::to_string(&config)?;
         self.file_manager
             .print_verbose(format!(
                 "Writing config for {} to {:?}\n{}",
@@ -656,7 +664,10 @@ impl FileManager {
         P: AsRef<Path> + Clone,
     {
         let mut dest = dir.as_ref().to_path_buf();
-        dest.set_file_name(&format!("{}.zip", dest.file_name().unwrap().to_string_lossy()));
+        dest.set_file_name(&format!(
+            "{}.zip",
+            dest.file_name().unwrap().to_string_lossy()
+        ));
 
         self.print_verbose(format!("Zipping {:?} into {:?}", dir.as_ref(), dest))
             .await?;
