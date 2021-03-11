@@ -44,17 +44,23 @@ async fn main() -> Result<()> {
     }
 
     let created_devices = hub_manager.create_devices().await?;
-
-    cert_manager.make_root_cert().await?;
-    let device_ids = created_devices
+    let device_ids: Vec<&str> = created_devices
         .iter()
         .map(|d| d.device_id.as_str())
         .collect();
-    cert_manager.make_all_device_certs(device_ids).await?;
+
+    cert_manager.make_root_cert().await?;
+    cert_manager.make_all_device_certs(&device_ids).await?;
 
     config_manager
         .make_all_device_configs(&created_devices)
         .await?;
+
+    for device in device_ids {
+        file_manager
+            .zip_dir(file_manager.get_folder(device).await?)
+            .await?
+    }
 
     Ok(())
 }
@@ -373,7 +379,7 @@ impl<'a> CertManager<'a> {
         }
     }
 
-    pub async fn make_all_device_certs(&self, device_ids: Vec<&str>) -> Result<()> {
+    pub async fn make_all_device_certs(&self, device_ids: &[&str]) -> Result<()> {
         self.file_manager
             .print(&format!("Creating certs for {} devices", device_ids.len(),))
             .await?;
@@ -622,7 +628,8 @@ impl FileManager {
         let walkdir = WalkDir::new(dir.clone());
         let it = walkdir.into_iter();
 
-        self.zip_dir_inner(&mut it.filter_map(|e| e.ok()), dir, file)?;
+        self.zip_dir_inner(&mut it.filter_map(|e| e.ok()), &dir, file)?;
+        fs::remove_dir_all(dir).await?;
 
         Ok(())
     }
