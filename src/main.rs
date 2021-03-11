@@ -56,6 +56,7 @@ async fn main() -> Result<()> {
         .make_all_device_configs(&created_devices)
         .await?;
 
+    file_manager.print("Zipping all device folders.").await?;
     for device in device_ids {
         file_manager
             .zip_dir(file_manager.get_folder(device).await?)
@@ -620,9 +621,12 @@ impl FileManager {
     where
         P: AsRef<Path> + Clone,
     {
+        self.print_verbose(format!("Zipping {:?}", dir.as_ref()))
+            .await?;
         let mut dest = dir.as_ref().to_path_buf();
-        dest.set_extension(".zip");
+        dest.set_extension("zip");
 
+        // Note zipping is done synchronously since the zip lib is sync
         let file = File::create(&dest)?;
 
         let walkdir = WalkDir::new(dir.clone());
@@ -657,7 +661,6 @@ impl FileManager {
             // Write file or directory explicitly
             // Some unzip tools unzip files with directory paths correctly, some do not!
             if path.is_file() {
-                println!("adding file {:?} as {:?} ...", path, name);
                 #[allow(deprecated)]
                 zip.start_file_from_path(name, options)?;
                 let mut f = File::open(path)?;
@@ -665,10 +668,9 @@ impl FileManager {
                 f.read_to_end(&mut buffer)?;
                 zip.write_all(&*buffer)?;
                 buffer.clear();
-            } else if name.as_os_str().len() != 0 {
+            } else if !name.as_os_str().is_empty() {
                 // Only if not root! Avoids path spec / warning
                 // and mapname conversion failed error on unzip
-                println!("adding dir {:?} as {:?} ...", path, name);
                 #[allow(deprecated)]
                 zip.add_directory_from_path(name, options)?;
             }
