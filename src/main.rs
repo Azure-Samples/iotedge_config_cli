@@ -16,39 +16,46 @@ mod hub_responses;
 use config::*;
 use hub_responses::*;
 
+// Windows only, run
+//$Env:OPENSSL_CONF="C:\Users\Lee\source\GnuWin32\share\openssl.cnf"
+// openssl = C:\Users\Lee\source\GnuWin32\bin\openssl.exe
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Arguments = StructOpt::from_args();
-    println!("{:#?}", args);
-
     let config = read_config(args.config).await?;
-    let file_manager =
-        FileManager::new(args.output.unwrap_or_else(|| "test".into()), args.verbose).await?;
-
+    let base_path = args.output.unwrap_or_else(|| "test".into());
+    let file_manager = FileManager::new(base_path, args.verbose).await?;
     let hub_manager = IoTHubDeviceManager::new(&config, &file_manager);
-    if args.delete {
-        hub_manager.delete_devices().await?;
+    let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
+    let config_manager = DeviceConfigManager::new(&config, &file_manager);
+
+    visualize(&config.root_device, &file_manager).await?;
+    if args.visualize {
         return Ok(());
     }
 
-    let devices = hub_manager.create_devices().await?;
+    if args.delete || args.force {
+        hub_manager.delete_devices().await?;
 
-    // Windows only, run
-    //$Env:OPENSSL_CONF="C:\Users\Lee\source\GnuWin32\share\openssl.cnf"
-    // #[cfg(any(windows))]
-    // let openssl = Some(Path::new(r"C:\Users\Lee\source\GnuWin32\bin\openssl.exe"));
-    // #[cfg(any(unix))]
-    // let openssl = None;
+        if args.delete {
+            return Ok(());
+        }
+    }
 
-    // let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
+    let created_devices = hub_manager.create_devices().await?;
 
-    // cert_manager.make_root_cert().await?;
-    // cert_manager.make_all_device_certs().await?;
+    cert_manager.make_root_cert().await?;
+    let device_ids = created_devices
+        .iter()
+        .map(|d| d.device_id.as_str())
+        .collect();
+    cert_manager.make_all_device_certs(device_ids).await?;
 
-    let config_manager = DeviceConfigManager::new(&config, &file_manager);
-    config_manager.make_all_device_configs(&devices).await?;
+    config_manager
+        .make_all_device_configs(&created_devices)
+        .await?;
 
-    // visualize(&config.root_device, &file_manager).await?;
     Ok(())
 }
 
@@ -58,9 +65,17 @@ struct Arguments {
     #[structopt(short, long)]
     verbose: bool,
 
-    /// Delete: deletes devices in hub instead fo creating them
+    /// Delete: deletes devices in hub instead of creating them
     #[structopt(short, long)]
     delete: bool,
+
+    /// Force: tries to delete devices in hub before creating new ones
+    #[structopt(short, long)]
+    force: bool,
+
+    /// Visualize: only outputs visualization file, does no other work
+    #[structopt(long)]
+    visualize: bool,
 
     /// Output: path to create directory at. Default: `./nested`
     #[structopt(short, long)]
@@ -90,18 +105,6 @@ async fn read_config(file_path: Option<PathBuf>) -> Result<Config> {
     };
 
     Ok(config)
-}
-
-fn get_command(command: &str) -> Command {
-    #[cfg(any(unix))]
-    {
-        Command::new(command)
-    }
-
-    #[cfg(any(windows))]
-    {
-        Command::new("powershell.exe").arg(command)
-    }
 }
 
 fn flatten_devices(device: &DeviceConfig) -> Vec<&str> {
@@ -162,6 +165,9 @@ impl<'a> IoTHubDeviceManager<'a> {
             .await
             .into_iter()
             .collect::<Result<Vec<()>>>()?;
+        self.file_manager
+            .print("Created all relationships.")
+            .await?;
 
         Ok(created_devices)
     }
@@ -221,14 +227,15 @@ impl<'a> IoTHubDeviceManager<'a> {
             ))
             .await?;
 
-        let command = get_command("az")
-            .arg("iot hub device-identity create")
-            .args(&["--device-id", device_id])
-            .args(&["--hub-name", &self.config.iothub.iot_hub_name])
-            .arg("--edge-enabled")
-            .output()
-            .await?;
-
+        let args = &[
+            "az iot hub device-identity create",
+            "--device-id",
+            device_id,
+            "--hub-name",
+            &self.config.iothub.iot_hub_name,
+            "--edge-enabled",
+        ];
+        let command = Self::run_az_command(args).output().await?;
         if command.status.success() {
             self.file_manager
                 .print_verbose(format!("Successfully created {}", device_id))
@@ -254,14 +261,16 @@ impl<'a> IoTHubDeviceManager<'a> {
             .print_verbose(format!("Adding {} as child of parent {}.", child, parent,))
             .await?;
 
-        let command = get_command("az")
-            .arg("iot hub device-identity parent set")
-            .args(&["--device-id", child])
-            .args(&["--parent-device-id", parent])
-            .args(&["--hub-name", &self.config.iothub.iot_hub_name])
-            .output()
-            .await?;
-
+        let args = &[
+            "az iot hub device-identity parent set",
+            "--device-id",
+            child,
+            "--parent-device-id",
+            parent,
+            "--hub-name",
+            &self.config.iothub.iot_hub_name,
+        ];
+        let command = Self::run_az_command(args).output().await?;
         if command.status.success() {
             self.file_manager
                 .print_verbose(format!(
@@ -293,10 +302,16 @@ impl<'a> IoTHubDeviceManager<'a> {
             ))
             .await?;
 
-        let command = get_command("az")
-            .arg("iot hub device-identity delete")
-            .args(&["--device-id", device_id])
-            .args(&["--hub-name", &self.config.iothub.iot_hub_name])
+        let args = &[
+            "az iot hub device-identity delete",
+            "--device-id",
+            device_id,
+            "--hub-name",
+            &self.config.iothub.iot_hub_name,
+        ];
+
+        let command = Self::run_az_command(args)
+            // .spawn()?;
             .output()
             .await?;
 
@@ -320,6 +335,23 @@ impl<'a> IoTHubDeviceManager<'a> {
             Ok(false)
         }
     }
+
+    fn run_az_command(args: &[&str]) -> Command {
+        #[cfg(any(unix))]
+        {
+            let args = args.join(" ");
+            let mut command = Command::new("sh");
+            command.arg("-c").arg(args);
+            command
+        }
+
+        #[cfg(any(windows))]
+        {
+            let mut command = Command::new("powershell.exe");
+            command.args(args);
+            command
+        }
+    }
 }
 
 struct CertManager<'a> {
@@ -341,16 +373,12 @@ impl<'a> CertManager<'a> {
         }
     }
 
-    pub async fn make_all_device_certs(&self) -> Result<()> {
-        let certs_to_make = flatten_devices(&self.config.root_device);
+    pub async fn make_all_device_certs(&self, device_ids: Vec<&str>) -> Result<()> {
         self.file_manager
-            .print(&format!(
-                "Creating certs for {} devices",
-                certs_to_make.len(),
-            ))
+            .print(&format!("Creating certs for {} devices", device_ids.len(),))
             .await?;
 
-        let futures = certs_to_make.iter().map(|d| self.make_device_cert(d));
+        let futures = device_ids.iter().map(|d| self.make_device_cert(d));
 
         futures::future::join_all(futures)
             .await
@@ -511,7 +539,11 @@ impl<'a> DeviceConfigManager<'a> {
             },
         };
 
-        let file = self.file_manager.get_folder(&device.device_id).await?;
+        let file = self
+            .file_manager
+            .get_folder(&device.device_id)
+            .await?
+            .join("config.toml");
         let config = toml::to_string(config)?;
         self.file_manager
             .print_verbose(format!(
