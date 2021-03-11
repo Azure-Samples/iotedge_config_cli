@@ -1,7 +1,7 @@
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct Config {
     pub iothub: IoTHub,
-    pub certificates: Certificates,
+    pub certificates: Option<Certificates>,
     pub configuration: Configuration,
     #[serde(rename = "edgedevices")]
     pub root_device: DeviceConfig,

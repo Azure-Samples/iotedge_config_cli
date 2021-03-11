@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -23,15 +24,19 @@ use hub_responses::*;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Arguments = StructOpt::from_args();
-    let args_log = format!("Using options:\n{:#?}", args);
+    if args.clean {
+        let _ = fs::remove_dir_all(&args.output).await;
+    }
 
-    let config = read_config(args.config).await?;
-    let file_manager = FileManager::new(args.output, args.verbose).await?;
+    let config = read_config(&args.config).await?;
+    let file_manager = FileManager::new(&args.output, args.verbose).await?;
     let hub_manager = IoTHubDeviceManager::new(&config, &file_manager);
     let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
     let config_manager = DeviceConfigManager::new(&config, &file_manager);
 
-    file_manager.print_verbose(args_log).await?;
+    file_manager
+        .print_verbose(format!("Using options:\n{:#?}", args))
+        .await?;
 
     visualize(&config.root_device, &file_manager).await?;
     if args.visualize {
@@ -55,7 +60,7 @@ async fn main() -> Result<()> {
         .map(|d| d.device_id.as_str())
         .collect();
 
-    cert_manager.make_root_cert().await?;
+    // cert_manager.make_all_device_certs(&["device-1"]).await?;
     cert_manager.make_all_device_certs(&device_ids).await?;
 
     config_manager
@@ -96,6 +101,10 @@ struct Arguments {
     /// Force: tries to delete devices in hub before creating new ones
     #[structopt(short, long)]
     force: bool,
+
+    /// Clean: deletes working directory at start
+    #[structopt(long)]
+    clean: bool,
 
     /// Visualize: only outputs visualization file, does no other work
     #[structopt(long)]
@@ -144,9 +153,12 @@ impl std::str::FromStr for ZipOptions {
     }
 }
 
-async fn read_config(file_path: PathBuf) -> Result<Config> {
-    println!("Reading {:?}", file_path);
-    let is_toml = file_path.to_str().unwrap().ends_with(".toml");
+async fn read_config<P>(file_path: P) -> Result<Config>
+where
+    P: AsRef<Path>,
+{
+    println!("Reading {:?}", file_path.as_ref());
+    let is_toml = file_path.as_ref().to_str().unwrap().ends_with(".toml");
 
     let data = fs::read(file_path).await.context("Error reading file")?;
 
@@ -426,11 +438,29 @@ impl<'a> CertManager<'a> {
     }
 
     pub async fn make_all_device_certs(&self, device_ids: &[&str]) -> Result<()> {
+        let (cert_path, key_path) = if let Some(certificates) = &self.config.certificates {
+            self.file_manager
+                .print(format!(
+                    "Using root CA {:?} with key {:?}.",
+                    certificates.root_ca_cert_path, certificates.root_ca_cert_key_path
+                ))
+                .await?;
+
+            (
+                PathBuf::from_str(&certificates.root_ca_cert_path)?,
+                PathBuf::from_str(&certificates.root_ca_cert_key_path)?,
+            )
+        } else {
+            self.make_root_cert().await?
+        };
+
         self.file_manager
-            .print(&format!("Creating certs for {} devices", device_ids.len(),))
+            .print(format!("Creating certs for {} devices", device_ids.len(),))
             .await?;
 
-        let futures = device_ids.iter().map(|d| self.make_device_cert(d));
+        let futures = device_ids
+            .iter()
+            .map(|d| self.make_device_cert(d, &cert_path, &key_path));
 
         futures::future::join_all(futures)
             .await
@@ -442,9 +472,12 @@ impl<'a> CertManager<'a> {
         Ok(())
     }
 
-    pub async fn make_root_cert(&self) -> Result<()> {
+    async fn make_root_cert(&self) -> Result<(PathBuf, PathBuf)> {
         self.file_manager.print("Making Root CA.").await?;
         let cert_folder = self.file_manager.get_folder("certs").await?;
+        let cert_path = cert_folder.join("root.pem");
+        let key_path = cert_folder.join("root.key.pem");
+
         let command = self
             .openssl_path
             .map_or_else(|| Command::new("openssl"), Command::new)
@@ -452,11 +485,8 @@ impl<'a> CertManager<'a> {
             .args(&[
                 "-x509", "-new", "-newkey", "rsa:4096", "-days", "365", "-nodes",
             ])
-            .args(&[
-                OsStr::new("-keyout"),
-                cert_folder.join("root.key.pem").as_os_str(),
-            ])
-            .args(&[OsStr::new("-out"), cert_folder.join("root.pem").as_os_str()])
+            .args(&[OsStr::new("-keyout"), key_path.as_os_str()])
+            .args(&[OsStr::new("-out"), cert_path.as_os_str()])
             .args(&["-subj", "/CN=Azure_IoT_Nested_Cert"])
             .output()
             .await?;
@@ -476,33 +506,33 @@ impl<'a> CertManager<'a> {
             ))
             .await?;
 
-        Ok(())
+        Ok((cert_path, key_path))
     }
 
-    async fn make_device_cert(&self, device_id: &str) -> Result<()> {
-        self.file_manager
-            .print_verbose(format!("Making device CA for {}.", device_id))
-            .await?;
-
-        // TODO: make cert correctly
+    async fn make_device_cert(
+        &self,
+        device_id: &str,
+        ca_cert_path: &Path,
+        ca_key_path: &Path,
+    ) -> Result<()> {
         let device_folder = self.file_manager.get_folder(device_id).await?;
+        let csr = device_folder.join("device-id.csr");
+
+        // CSR
+        self.file_manager
+            .print_verbose(format!("Making device csr for {}.", device_id))
+            .await?;
         let command = self
             .openssl_path
             .map_or_else(|| Command::new("openssl"), Command::new)
             .arg("req")
-            .args(&[
-                "-x509", "-new", "-newkey", "rsa:4096", "-days", "365", "-nodes",
-            ])
+            .args(&["-newkey", "rsa:4096", "-nodes"])
             .args(&[
                 OsStr::new("-keyout"),
-                device_folder.join("key.pem").as_os_str(),
+                device_folder.join("device-id.key.pem").as_os_str(),
             ])
-            .args(&[
-                OsStr::new("-out"),
-                device_folder.join("cert.pem").as_os_str(),
-            ])
-            .args(&["-subj", "/CN=Azure_IoT_Nested_Cert"])
-            // .spawn()?;
+            .args(&[OsStr::new("-out"), csr.as_os_str()])
+            .args(&["-subj", &format!("/CN={}", device_id)])
             .output()
             .await?;
 
@@ -514,12 +544,63 @@ impl<'a> CertManager<'a> {
             ))
             .await?;
 
+        if !command.status.success() {
+            return Err(anyhow::Error::msg(format!(
+                "Error making csr for {}",
+                device_id
+            )));
+        }
+
+        // Sign Cert
         self.file_manager
             .print_verbose(format!(
-                "Successfully made CA {:?}.",
-                device_folder.join("cert.pem")
+                "Making device cert based on for {:?} using {:?}.",
+                csr, ca_cert_path
             ))
             .await?;
+        let command = self
+            .openssl_path
+            .map_or_else(|| Command::new("openssl"), Command::new)
+            .arg("x509")
+            .args(&["-req", "-days", "365", "-CAcreateserial"])
+            .args(&[OsStr::new("-in"), csr.as_os_str()])
+            .args(&[
+                OsStr::new("-out"),
+                device_folder.join("device-id.cert.pem").as_os_str(),
+            ])
+            .args(&[OsStr::new("-CA"), ca_cert_path.as_os_str()])
+            .args(&[OsStr::new("-CAkey"), ca_key_path.as_os_str()])
+            .output()
+            .await?;
+
+        self.file_manager
+            .print_verbose(format!(
+                "{}{}",
+                String::from_utf8_lossy(&command.stdout),
+                String::from_utf8_lossy(&command.stderr)
+            ))
+            .await?;
+
+        if !command.status.success() {
+            return Err(anyhow::Error::msg(format!(
+                "Error making cert for {}",
+                device_id
+            )));
+        }
+
+        self.file_manager
+            .print_verbose(format!(
+                "Successfully made cert {:?}. Copying root cert to folder.",
+                device_folder.join("device-id.cert.pem")
+            ))
+            .await?;
+
+        fs::remove_file(csr).await?;
+        fs::copy(
+            ca_cert_path,
+            device_folder.join(ca_cert_path.file_name().unwrap()),
+        )
+        .await?;
 
         Ok(())
     }
