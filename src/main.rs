@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
         .print_verbose(format!("Using options:\n{:#?}", args))
         .await?;
 
+    visualize_terminal(&config.root_device, &file_manager).await?;
     visualize(&config.root_device, &file_manager).await?;
     if args.visualize {
         return Ok(());
@@ -299,7 +300,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             &self.config.iothub.iothub_name,
             "--edge-enabled",
         ];
-        let command = Self::run_az_command(args).output().await?;
+        let command = run_command(args).output().await?;
         if command.status.success() {
             self.file_manager
                 .print_verbose(format!("Successfully created {}", device_id))
@@ -334,7 +335,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             "--hub-name",
             &self.config.iothub.iothub_name,
         ];
-        let command = Self::run_az_command(args).output().await?;
+        let command = run_command(args).output().await?;
         if command.status.success() {
             self.file_manager
                 .print_verbose(format!(
@@ -374,7 +375,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             &self.config.iothub.iothub_name,
         ];
 
-        let command = Self::run_az_command(args)
+        let command = run_command(args)
             // .spawn()?;
             .output()
             .await?;
@@ -397,23 +398,6 @@ impl<'a> IoTHubDeviceManager<'a> {
                 .await?;
 
             Ok(false)
-        }
-    }
-
-    fn run_az_command(args: &[&str]) -> Command {
-        #[cfg(any(unix))]
-        {
-            let args = args.join(" ");
-            let mut command = Command::new("sh");
-            command.arg("-c").arg(args);
-            command
-        }
-
-        #[cfg(any(windows))]
-        {
-            let mut command = Command::new("powershell.exe");
-            command.args(args);
-            command
         }
     }
 }
@@ -843,6 +827,57 @@ impl FileManager {
     }
 }
 
+async fn visualize_terminal(root: &DeviceConfig, file_manager: &FileManager) -> Result<()> {
+    let hub = file_manager.get_folder("iot-hub").await?;
+    make_tree_dir(root, &hub).await?;
+
+    // Catch any errors so we always clean up
+    let result: Result<()> = async {
+        let hub: String = hub.clone().into_os_string().into_string().unwrap();
+        let output = run_command(&["tree", &hub]).output().await?;
+        if !output.status.success() {
+            // Failure to visualize isn't a critical error
+            file_manager
+                .print(format!(
+                    "Error visualizing devices on command line: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ))
+                .await?;
+        } else {
+            let output = String::from_utf8_lossy(&output.stdout);
+            let split_loc = output.find(&root.device_id).unwrap_or_default();
+            let output = &output[split_loc..];
+            let output = output.replace("directories", "devices");
+            let output = output.replace(", 0 files", "");
+            let output = format!("Devices:\n{}", output);
+            file_manager.print(output).await?;
+        }
+
+        Ok(())
+    }
+    .await;
+
+    fs::remove_dir_all(hub).await?;
+    result
+}
+
+// https://rust-lang.github.io/async-book/07_workarounds/04_recursion.html
+use futures::future::{BoxFuture, FutureExt};
+fn make_tree_dir<'a>(device: &'a DeviceConfig, parent: &'a Path) -> BoxFuture<'a, Result<()>> {
+    async move {
+        let dir = parent.join(&device.device_id);
+        fs::create_dir(&dir).await?;
+
+        for child in &device.children {
+            make_tree_dir(&child, &dir).await?;
+        }
+
+        Ok(())
+    }
+    .boxed()
+}
+
 use id_tree::InsertBehavior::{AsRoot, UnderNode};
 use id_tree::{Node, NodeId, Tree, TreeBuilder};
 use id_tree_layout::{Layouter, Visualize};
@@ -891,5 +926,22 @@ impl Visualize for NodeData {
     }
     fn emphasize(&self) -> bool {
         false
+    }
+}
+
+fn run_command(args: &[&str]) -> Command {
+    #[cfg(any(unix))]
+    {
+        let args = args.join(" ");
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(args);
+        command
+    }
+
+    #[cfg(any(windows))]
+    {
+        let mut command = Command::new("powershell.exe");
+        command.args(args);
+        command
     }
 }
