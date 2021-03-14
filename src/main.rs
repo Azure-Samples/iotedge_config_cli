@@ -208,7 +208,7 @@ impl<'a> IoTHubDeviceManager<'a> {
         let relationships_to_add = Self::get_relationships(&self.config.root_device);
         self.file_manager
             .print(&format!(
-                "Created all devices. Adding {} parent-child relationships.",
+                "Adding {} parent-child relationships.",
                 relationships_to_add.len()
             ))
             .await?;
@@ -222,7 +222,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             .into_iter()
             .collect::<Result<Vec<()>>>()?;
         self.file_manager
-            .print("Created all relationships.")
+            .print_verbose("Created all relationships.")
             .await?;
 
         Ok(created_devices)
@@ -251,7 +251,9 @@ impl<'a> IoTHubDeviceManager<'a> {
             .count();
 
         if num_successes == devices_to_delete.len() {
-            self.file_manager.print("Deleted all devices.").await?;
+            self.file_manager
+                .print_verbose("Deleted all devices.")
+                .await?;
         } else {
             self.file_manager
                 .print(&format!(
@@ -507,16 +509,20 @@ impl<'a> CertManager<'a> {
             .into_iter()
             .collect::<Result<Vec<()>>>()?;
 
-        self.file_manager.print("Created all device certs.").await?;
+        self.file_manager
+            .print_verbose("Created all device certs.")
+            .await?;
 
         Ok(())
     }
 
     async fn make_root_cert(&self) -> Result<(PathBuf, PathBuf)> {
-        self.file_manager.print("Making Root CA.").await?;
         let cert_folder = self.file_manager.get_folder("certs").await?;
         let cert_path = cert_folder.join("root.pem");
         let key_path = cert_folder.join("root.key.pem");
+        self.file_manager
+            .print(format!("Making Root CA {:?}.", cert_path))
+            .await?;
 
         let command = self
             .openssl_path
@@ -536,13 +542,6 @@ impl<'a> CertManager<'a> {
                 "{}{}",
                 String::from_utf8_lossy(&command.stdout),
                 String::from_utf8_lossy(&command.stderr)
-            ))
-            .await?;
-
-        self.file_manager
-            .print(format!(
-                "Successfully made Root CA {:?}.",
-                cert_folder.join("root.pem")
             ))
             .await?;
 
@@ -685,7 +684,7 @@ impl<'a> DeviceConfigManager<'a> {
                 .await?;
         }
 
-        self.file_manager.print("Created config files.").await?;
+        self.file_manager.print_verbose("Created config files.").await?;
 
         Ok(())
     }
