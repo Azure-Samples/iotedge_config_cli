@@ -1,0 +1,15 @@
+iothub:
+  iothub_hostname: lefitche-hub-3.azure-devices.net
+  iothub_name: lefitche-hub-3
+  authentication_method: connection_string
+# certificates:
+#   root_ca_cert_path: ""
+#   root_ca_cert_key_path: ""
+configuration:
+  template_config_path: "./templates/device_config.toml"
+edgedevices:
+  device_id: pi1
+  deployment: ./templates/sample-deployment.json
+  child:
+    - device_id: pi2
+      deployment: ./templates/sample-deployment.json

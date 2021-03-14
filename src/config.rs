@@ -28,6 +28,7 @@ pub struct Configuration {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct DeviceConfig {
     pub device_id: String,
+    pub deployment: Option<String>,
     #[serde(default, rename = "child")]
     pub children: Vec<DeviceConfig>,
 }

@@ -38,8 +38,8 @@ async fn main() -> Result<()> {
         .print_verbose(format!("Using options:\n{:#?}", args))
         .await?;
 
-    visualize_terminal(&config.root_device, &file_manager).await?;
     visualize_svg(&config.root_device, &file_manager).await?;
+    visualize_terminal(&config.root_device, &file_manager).await?;
     if args.visualize {
         return Ok(());
     }
@@ -172,15 +172,6 @@ where
     Ok(config)
 }
 
-fn flatten_devices(device: &DeviceConfig) -> Vec<&str> {
-    let mut result: Vec<&str> = vec![&device.device_id];
-    for child in &device.children {
-        result.append(&mut flatten_devices(&child));
-    }
-
-    result
-}
-
 struct IoTHubDeviceManager<'a> {
     config: &'a Config,
     file_manager: &'a FileManager,
@@ -196,7 +187,7 @@ impl<'a> IoTHubDeviceManager<'a> {
 
     pub async fn create_devices(&self) -> Result<Vec<CreateResponse>> {
         // Create devices
-        let devices_to_create = flatten_devices(&self.config.root_device);
+        let devices_to_create = Self::flatten_devices(&self.config.root_device);
         self.file_manager
             .print(&format!(
                 "Creating {} devices in hub {}",
@@ -207,7 +198,7 @@ impl<'a> IoTHubDeviceManager<'a> {
 
         let futures = devices_to_create
             .iter()
-            .map(|d| self.create_device_identity(d));
+            .map(|d| self.create_device_identity(&d.device_id, d.deployment.as_deref()));
 
         let created_devices = futures::future::join_all(futures)
             .await
@@ -238,7 +229,7 @@ impl<'a> IoTHubDeviceManager<'a> {
     }
 
     pub async fn delete_devices(&self) -> Result<()> {
-        let devices_to_delete = flatten_devices(&self.config.root_device);
+        let devices_to_delete = Self::flatten_devices(&self.config.root_device);
         self.file_manager
             .print(&format!(
                 "Deleting {} devices from hub {}",
@@ -249,7 +240,7 @@ impl<'a> IoTHubDeviceManager<'a> {
 
         let futures = devices_to_delete
             .iter()
-            .map(|d| self.delete_device_identity(d));
+            .map(|d| self.delete_device_identity(&d.device_id));
 
         let num_successes = futures::future::join_all(futures)
             .await
@@ -274,6 +265,15 @@ impl<'a> IoTHubDeviceManager<'a> {
         Ok(())
     }
 
+    fn flatten_devices(device: &DeviceConfig) -> Vec<&DeviceConfig> {
+        let mut result: Vec<&DeviceConfig> = vec![&device];
+        for child in &device.children {
+            result.append(&mut Self::flatten_devices(&child));
+        }
+
+        result
+    }
+
     fn get_relationships(device: &DeviceConfig) -> Vec<(&str, &str)> {
         let mut result: Vec<(&str, &str)> = Vec::new();
         for child in &device.children {
@@ -284,7 +284,11 @@ impl<'a> IoTHubDeviceManager<'a> {
         result
     }
 
-    async fn create_device_identity(&self, device_id: &str) -> Result<CreateResponse> {
+    async fn create_device_identity(
+        &self,
+        device_id: &str,
+        deployment: Option<&str>,
+    ) -> Result<CreateResponse> {
         self.file_manager
             .print_verbose(format!(
                 "Creating device {} on hub {}",
@@ -303,10 +307,18 @@ impl<'a> IoTHubDeviceManager<'a> {
         let command = run_command(args).output().await?;
         if command.status.success() {
             self.file_manager
-                .print_verbose(format!("Successfully created {}", device_id))
+                .print_verbose(format!(
+                    "Successfully created {}.\n{}",
+                    device_id,
+                    String::from_utf8_lossy(&command.stdout)
+                ))
                 .await?;
 
             let created_device: CreateResponse = serde_json::from_slice(&command.stdout)?;
+
+            if let Some(deployment) = deployment {
+                self.set_deployment(device_id, deployment).await?;
+            }
             Ok(created_device)
         } else {
             let error = format!(
@@ -339,8 +351,10 @@ impl<'a> IoTHubDeviceManager<'a> {
         if command.status.success() {
             self.file_manager
                 .print_verbose(format!(
-                    "Successfully added {} as child of parent {}.",
-                    child, parent,
+                    "Successfully added {} as child of parent {}.\n{}",
+                    child,
+                    parent,
+                    String::from_utf8_lossy(&command.stdout)
                 ))
                 .await?;
 
@@ -384,7 +398,11 @@ impl<'a> IoTHubDeviceManager<'a> {
             || String::from_utf8_lossy(&command.stderr).contains("ErrorCode:DeviceNotFound;")
         {
             self.file_manager
-                .print_verbose(format!("Successfully deleted {}", device_id))
+                .print_verbose(format!(
+                    "Successfully deleted {}.\n{}",
+                    device_id,
+                    String::from_utf8_lossy(&command.stdout)
+                ))
                 .await?;
             Ok(true)
         } else {
@@ -398,6 +416,44 @@ impl<'a> IoTHubDeviceManager<'a> {
                 .await?;
 
             Ok(false)
+        }
+    }
+
+    async fn set_deployment(&self, device_id: &str, path: &str) -> Result<()> {
+        self.file_manager
+            .print_verbose(format!("Setting {}'s deployment to {}", device_id, path))
+            .await?;
+
+        let args = &[
+            "az iot edge set-modules",
+            "--device-id",
+            device_id,
+            "--hub-name",
+            &self.config.iothub.iothub_name,
+            "--content",
+            path,
+        ];
+        let command = run_command(args).output().await?;
+        if command.status.success() {
+            self.file_manager
+                .print_verbose(format!(
+                    "Successfully set deployment for {}.\n{}",
+                    device_id,
+                    String::from_utf8_lossy(&command.stdout)
+                ))
+                .await?;
+
+            Ok(())
+        } else {
+            let error = format!(
+                "Failed to set deployment for {}:\n{}\n{}\n",
+                device_id,
+                String::from_utf8_lossy(&command.stdout),
+                String::from_utf8_lossy(&command.stderr)
+            );
+            self.file_manager.print_verbose(&error).await?;
+
+            Err(anyhow::Error::msg(error))
         }
     }
 }
