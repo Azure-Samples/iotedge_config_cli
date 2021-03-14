@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
         .await?;
 
     visualize_terminal(&config.root_device, &file_manager).await?;
-    visualize(&config.root_device, &file_manager).await?;
+    visualize_svg(&config.root_device, &file_manager).await?;
     if args.visualize {
         return Ok(());
     }
@@ -828,52 +828,32 @@ impl FileManager {
 }
 
 async fn visualize_terminal(root: &DeviceConfig, file_manager: &FileManager) -> Result<()> {
-    let hub = file_manager.get_folder("iot-hub").await?;
-    make_tree_dir(root, &hub).await?;
+    let result = make_tree(root, "").await?;
+    file_manager.print(&result).await?;
+    fs::write(file_manager.base_path().join("visualization.txt"), result).await?;
 
-    // Catch any errors so we always clean up
-    let result: Result<()> = async {
-        let hub: String = hub.clone().into_os_string().into_string().unwrap();
-        let output = run_command(&["tree", &hub]).output().await?;
-        if !output.status.success() {
-            // Failure to visualize isn't a critical error
-            file_manager
-                .print(format!(
-                    "Error visualizing devices on command line: {}{}",
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                ))
-                .await?;
-        } else {
-            let output = String::from_utf8_lossy(&output.stdout);
-            let split_loc = output.find(&root.device_id).unwrap_or_default();
-            let output = &output[split_loc..];
-            let output = output.replace("directories", "devices");
-            let output = output.replace(", 0 files", "");
-            let output = format!("Devices:\n{}", output);
-            file_manager.print(output).await?;
-        }
-
-        Ok(())
-    }
-    .await;
-
-    fs::remove_dir_all(hub).await?;
-    result
+    Ok(())
 }
 
 // https://rust-lang.github.io/async-book/07_workarounds/04_recursion.html
 use futures::future::{BoxFuture, FutureExt};
-fn make_tree_dir<'a>(device: &'a DeviceConfig, parent: &'a Path) -> BoxFuture<'a, Result<()>> {
+fn make_tree<'a>(device: &'a DeviceConfig, prefix: &'a str) -> BoxFuture<'a, Result<String>> {
     async move {
-        let dir = parent.join(&device.device_id);
-        fs::create_dir(&dir).await?;
+        let mut result: Vec<String> = vec![device.device_id.clone(), "\n".to_owned()];
 
-        for child in &device.children {
-            make_tree_dir(&child, &dir).await?;
+        let num_children = device.children.len();
+        for (i, child) in device.children.iter().enumerate() {
+            let is_last = i + 1 == num_children;
+            let node_prefix = if is_last { "└──" } else { "├──" };
+            let node_prefix = [prefix, node_prefix].concat();
+            result.push(node_prefix);
+
+            let child_prefix = if is_last { "    " } else { "│   " };
+            let child_prefix = [prefix, child_prefix].concat();
+            result.push(make_tree(&child, &child_prefix).await?);
         }
 
-        Ok(())
+        Ok(result.concat())
     }
     .boxed()
 }
@@ -884,7 +864,7 @@ use id_tree_layout::{Layouter, Visualize};
 
 struct NodeData(String);
 
-async fn visualize(root: &DeviceConfig, file_manager: &FileManager) -> Result<()> {
+async fn visualize_svg(root: &DeviceConfig, file_manager: &FileManager) -> Result<()> {
     let path = file_manager.base_path().join("visualization.svg");
     file_manager
         .print(format!("Outputing visualization to {:?}", path))
