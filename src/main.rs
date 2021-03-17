@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -28,16 +29,19 @@ async fn main() -> Result<()> {
         let _ = fs::remove_dir_all(&args.output).await;
     }
 
-    let config = read_config(&args.config).await?;
+    let config = Config::read_config(&args.config).await?;
     let file_manager = FileManager::new(&args.output, args.verbose).await?;
     let hub_manager = IoTHubDeviceManager::new(&config, &file_manager);
     let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
-    let config_manager = DeviceConfigManager::new(&config, &file_manager);
+    let device_config_manager = DeviceConfigManager::new(&config, &file_manager);
     let script_manager = ScriptManager::new(&config, &file_manager);
 
     file_manager
         .print_verbose(format!("Using options:\n{:#?}", args))
         .await?;
+
+    config.check_device_ids().await?;
+    config.check_hostnames(&file_manager).await?;
 
     visualize_svg(&config.root_device, &file_manager).await?;
     visualize_terminal(&config.root_device, &file_manager).await?;
@@ -59,16 +63,16 @@ async fn main() -> Result<()> {
     }
     let device_ids: Vec<&str> = created_devices
         .iter()
-        .map(|d| d.device_id.as_str())
+        .map(|d| d.device.device_id.as_str())
         .collect();
 
     cert_manager.make_all_device_certs(&device_ids).await?;
 
-    config_manager
+    device_config_manager
         .make_all_device_configs(&created_devices)
         .await?;
 
-    script_manager.add_install_scripts().await?;
+    script_manager.add_install_scripts(&created_devices).await?;
 
     if args.zip_options != ZipOptions::None {
         file_manager.print("Zipping all device folders.").await?;
@@ -156,22 +160,91 @@ impl std::str::FromStr for ZipOptions {
     }
 }
 
-async fn read_config<P>(file_path: P) -> Result<Config>
-where
-    P: AsRef<Path>,
-{
-    println!("Reading {:?}", file_path.as_ref());
-    let is_toml = file_path.as_ref().to_str().unwrap().ends_with(".toml");
+impl Config {
+    pub async fn read_config<P>(file_path: P) -> Result<Self>
+    where
+        P: AsRef<Path>,
+    {
+        println!("Reading {:?}", file_path.as_ref());
+        let is_toml = file_path.as_ref().to_str().unwrap().ends_with(".toml");
 
-    let data = fs::read(file_path).await.context("Error reading file")?;
+        let data = fs::read(file_path).await.context("Error reading file")?;
 
-    let config = if is_toml {
-        toml::from_slice(&data).context("Error parsing data")?
-    } else {
-        serde_yaml::from_slice(&data).context("Error parsing data")?
-    };
+        let config = if is_toml {
+            toml::from_slice(&data).context("Error parsing data")?
+        } else {
+            serde_yaml::from_slice(&data).context("Error parsing data")?
+        };
 
-    Ok(config)
+        Ok(config)
+    }
+
+    async fn check_device_ids(&self) -> Result<()> {
+        let devices = FlatenedDevice::flatten_devices(&self.root_device);
+        let mut map = HashSet::new();
+
+        for device in devices {
+            if !map.insert(&device.device.device_id) {
+                let error = format!(
+                    r#"device id "{}" is used twice!"#,
+                    device.device.device_id
+                );
+
+                return Err(anyhow::Error::msg(error));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn check_hostnames(&self, file_manager: &FileManager) -> Result<()> {
+        let devices = FlatenedDevice::flatten_devices(&self.root_device);
+        let mut map = HashMap::new();
+
+        for device in devices {
+            if let Some(hostname) = &device.device.hostname {
+                if let Some(old) = map.insert(hostname, &device.device.device_id) {
+                    file_manager
+                        .print(format!(
+                            "WARNING: {} and {} share the hostname {}",
+                            old, device.device.device_id, hostname
+                        ))
+                        .await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+struct FlatenedDevice<'a> {
+    device: &'a DeviceConfig,
+    parent: Option<&'a DeviceConfig>,
+}
+
+impl<'a> FlatenedDevice<'a> {
+    pub fn flatten_devices(root: &'a DeviceConfig) -> Vec<Self> {
+        Self::flatten_devices_internal(root, None)
+    }
+
+    fn flatten_devices_internal(
+        device: &'a DeviceConfig,
+        parent: Option<&'a DeviceConfig>,
+    ) -> Vec<Self> {
+        let mut result: Vec<FlatenedDevice> = vec![FlatenedDevice { device, parent }];
+        for child in &device.children {
+            result.append(&mut Self::flatten_devices_internal(&child, Some(device)));
+        }
+
+        result
+    }
+}
+
+struct CreatedDevice<'a> {
+    device: &'a DeviceConfig,
+    parent: Option<&'a DeviceConfig>,
+    create_response: CreateResponse,
 }
 
 struct IoTHubDeviceManager<'a> {
@@ -187,9 +260,9 @@ impl<'a> IoTHubDeviceManager<'a> {
         }
     }
 
-    pub async fn create_devices(&self) -> Result<Vec<CreateResponse>> {
+    pub async fn create_devices(&self) -> Result<Vec<CreatedDevice<'_>>> {
         // Create devices
-        let devices_to_create = Self::flatten_devices(&self.config.root_device);
+        let devices_to_create = FlatenedDevice::flatten_devices(&self.config.root_device);
         self.file_manager
             .print(&format!(
                 "Creating {} devices in hub {}",
@@ -200,23 +273,24 @@ impl<'a> IoTHubDeviceManager<'a> {
 
         let futures = devices_to_create
             .iter()
-            .map(|d| self.create_device_identity(&d.device_id, d.deployment.as_deref()));
+            .map(|d| self.create_device_identity(d));
 
         let created_devices = futures::future::join_all(futures)
             .await
             .into_iter()
-            .collect::<Result<Vec<CreateResponse>>>()?;
+            .collect::<Result<Vec<CreatedDevice<'_>>>>()?;
+
         // Add parent-child relationships
-        let relationships_to_add = Self::get_relationships(&self.config.root_device);
+        let relationships_to_add = created_devices.iter().filter_map(|child| {
+            child
+                .parent
+                .map(|parent| (&parent.device_id, &child.device.device_id))
+        });
         self.file_manager
-            .print(&format!(
-                "Adding {} parent-child relationships.",
-                relationships_to_add.len()
-            ))
+            .print("Adding parent-child relationships.")
             .await?;
 
         let futures = relationships_to_add
-            .iter()
             .map(|(parent, child)| self.create_parent_child_relationship(parent, child));
 
         futures::future::join_all(futures)
@@ -231,7 +305,7 @@ impl<'a> IoTHubDeviceManager<'a> {
     }
 
     pub async fn delete_devices(&self) -> Result<()> {
-        let devices_to_delete = Self::flatten_devices(&self.config.root_device);
+        let devices_to_delete = FlatenedDevice::flatten_devices(&self.config.root_device);
         self.file_manager
             .print(&format!(
                 "Deleting {} devices from hub {}",
@@ -242,7 +316,7 @@ impl<'a> IoTHubDeviceManager<'a> {
 
         let futures = devices_to_delete
             .iter()
-            .map(|d| self.delete_device_identity(&d.device_id));
+            .map(|d| self.delete_device_identity(&d.device.device_id));
 
         let num_successes = futures::future::join_all(futures)
             .await
@@ -269,41 +343,21 @@ impl<'a> IoTHubDeviceManager<'a> {
         Ok(())
     }
 
-    fn flatten_devices(device: &DeviceConfig) -> Vec<&DeviceConfig> {
-        let mut result: Vec<&DeviceConfig> = vec![&device];
-        for child in &device.children {
-            result.append(&mut Self::flatten_devices(&child));
-        }
-
-        result
-    }
-
-    fn get_relationships(device: &DeviceConfig) -> Vec<(&str, &str)> {
-        let mut result: Vec<(&str, &str)> = Vec::new();
-        for child in &device.children {
-            result.push((&device.device_id, &child.device_id));
-            result.append(&mut Self::get_relationships(&child));
-        }
-
-        result
-    }
-
-    async fn create_device_identity(
+    async fn create_device_identity<'b>(
         &self,
-        device_id: &str,
-        deployment: Option<&str>,
-    ) -> Result<CreateResponse> {
+        device: &FlatenedDevice<'b>,
+    ) -> Result<CreatedDevice<'b>> {
         self.file_manager
             .print_verbose(format!(
                 "Creating device {} on hub {}",
-                device_id, self.config.iothub.iothub_name
+                device.device.device_id, self.config.iothub.iothub_name
             ))
             .await?;
 
         let args = &[
             "az iot hub device-identity create",
             "--device-id",
-            device_id,
+            &device.device.device_id,
             "--hub-name",
             &self.config.iothub.iothub_name,
             "--edge-enabled",
@@ -313,21 +367,26 @@ impl<'a> IoTHubDeviceManager<'a> {
             self.file_manager
                 .print_verbose(format!(
                     "Successfully created {}.\n{}",
-                    device_id,
+                    device.device.device_id,
                     String::from_utf8_lossy(&command.stdout)
                 ))
                 .await?;
 
             let created_device: CreateResponse = serde_json::from_slice(&command.stdout)?;
 
-            if let Some(deployment) = deployment {
-                self.set_deployment(device_id, deployment).await?;
+            if let Some(deployment) = &device.device.deployment {
+                self.set_deployment(&device.device.device_id, &deployment)
+                    .await?;
             }
-            Ok(created_device)
+            Ok(CreatedDevice {
+                device: device.device,
+                parent: device.parent,
+                create_response: created_device,
+            })
         } else {
             let error = format!(
                 "Failed to create {}:\n{}\n{}\n",
-                device_id,
+                device.device.device_id,
                 String::from_utf8_lossy(&command.stdout),
                 String::from_utf8_lossy(&command.stderr)
             );
@@ -499,7 +558,10 @@ impl<'a> CertManager<'a> {
         };
 
         self.file_manager
-            .print(format!("Creating certs for {} devices", device_ids.len(),))
+            .print(format!(
+                "Creating certificates for {} devices",
+                device_ids.len(),
+            ))
             .await?;
 
         let futures = device_ids
@@ -519,11 +581,14 @@ impl<'a> CertManager<'a> {
     }
 
     async fn make_root_cert(&self) -> Result<(PathBuf, PathBuf)> {
-        let cert_folder = self.file_manager.get_folder("certs").await?;
+        let cert_folder = self.file_manager.get_folder("certificates").await?;
         let cert_path = cert_folder.join("nested_edge_root.pem");
         let key_path = cert_folder.join("nested_edge_root.key.pem");
         self.file_manager
-            .print(format!("Making Root CA {:?}.", cert_path))
+            .print(format!(
+                "No Root CA specified. Generating self-signed root at {:?}.",
+                cert_path
+            ))
             .await?;
 
         let command = self
@@ -656,7 +721,7 @@ impl<'a> DeviceConfigManager<'a> {
         }
     }
 
-    pub async fn make_all_device_configs(&self, devices: &[CreateResponse]) -> Result<()> {
+    pub async fn make_all_device_configs(&self, devices: &[CreatedDevice<'_>]) -> Result<()> {
         self.file_manager
             .print(&format!(
                 "Creating configuration files based on {:?} for {} devices.",
@@ -691,32 +756,52 @@ impl<'a> DeviceConfigManager<'a> {
 
     async fn make_device_config(
         &self,
-        device: &CreateResponse,
+        device: &CreatedDevice<'_>,
         mut config: aziot_config::AziotConfig,
     ) -> Result<()> {
         let provisioning = aziot_config::Provisioning {
             source: "manual".to_owned(),
-            device_id: device.device_id.clone(),
+            device_id: device.device.device_id.clone(),
             iothub_hostname: self.config.iothub.iothub_hostname.clone(),
             authentication: aziot_config::Authentication {
                 method: "sas".to_owned(),
                 device_id_pk: aziot_config::DeviceIdPk {
-                    value: device.authentication.symmetric_key.primary_key.clone(),
+                    value: device
+                        .create_response
+                        .authentication
+                        .symmetric_key
+                        .primary_key
+                        .clone(),
                 },
             },
         };
         config.provisioning = Some(provisioning);
 
+        config.hostname = Some(
+            device
+                .device
+                .hostname
+                .as_deref()
+                .unwrap_or("{{HOSTNAME}}")
+                .to_owned(),
+        );
+        config.parent_hostname = device.parent.map(|p| {
+            p.hostname
+                .as_deref()
+                .unwrap_or("{{PARENT_HOSTNAME}}")
+                .to_owned()
+        });
+
         let file = self
             .file_manager
-            .get_folder(&device.device_id)
+            .get_folder(&device.device.device_id)
             .await?
             .join("config.toml");
         let config = toml::to_string(&config)?;
         self.file_manager
             .print_verbose(format!(
                 "Writing config for {} to {:?}\n{}",
-                device.device_id, file, config
+                device.device.device_id, file, config
             ))
             .await?;
 
@@ -895,58 +980,55 @@ impl<'a> ScriptManager<'a> {
         }
     }
 
-    pub async fn add_install_scripts(&self) -> Result<()> {
+    pub async fn add_install_scripts(&self, devices: &[CreatedDevice<'_>]) -> Result<()> {
         self.file_manager
             .print("Adding install scripts for all devices")
             .await?;
 
-        self.add_install_scripts_internal(&self.config.root_device, None)
-            .await?;
+        for device in devices {
+            self.add_install_scripts_internal(&device).await?;
+        }
+
         Ok(())
     }
 
-    pub fn add_install_scripts_internal<'b>(
-        &'b self,
-        device: &'b DeviceConfig,
-        parent_hostname: Option<&'b str>,
-    ) -> BoxFuture<'b, Result<()>> {
-        async move {
-            self.file_manager
-                .print_verbose(format!("Adding install script for {}", device.device_id))
-                .await?;
-            let hostname = device.hostname.as_deref().unwrap_or_default();
-            let parent_hostname = parent_hostname.unwrap_or_default();
+    async fn add_install_scripts_internal(&self, device: &CreatedDevice<'_>) -> Result<()> {
+        let hostname = device.device.hostname.as_deref();
+        let parent_hostname = device.parent.and_then(|p| p.hostname.as_deref());
+        self.file_manager
+            .print_verbose(format!(
+                "Adding install script for {} with hostname {:?} and parent hostname {:?}. (If values are none, install script will prompt user for values).",
+                device.device.device_id,
+                hostname,
+                parent_hostname
+            ))
+            .await?;
 
-            let consts = format!(
-                include_str!(r#"scripts/consts.sh"#),
-                device_id = device.device_id,
-                hostname = hostname,
-                parent_hostname = parent_hostname
-            );
+        let mut script: Vec<&str> = vec![include_str!(r#"scripts/headers.sh"#)];
 
-            let script = format!(
-                "{}\n\n{}\n\n{}\n\n{}",
-                consts,
-                include_str!(r#"scripts/set_config.sh"#),
-                include_str!(r#"scripts/install_certs.sh"#),
-                include_str!(r#"scripts/apply.sh"#),
-            );
-
-            let file = self
-                .file_manager
-                .get_folder(&device.device_id)
-                .await?
-                .join("install.sh");
-            fs::write(file, script).await?;
-
-            for child in &device.children {
-                self.add_install_scripts_internal(&child, device.hostname.as_deref())
-                    .await?;
-            }
-
-            Ok(())
+        if hostname.is_none() {
+            script.push(include_str!(r#"scripts/set_hostname.sh"#));
         }
-        .boxed()
+        if device.parent.is_some() && parent_hostname.is_none() {
+            script.push(include_str!(r#"scripts/set_parent_hostname.sh"#));
+        }
+
+        let install_certs = format!(
+            include_str!(r#"scripts/install_certs.sh"#),
+            device_id = device.device.device_id
+        );
+        script.push(&install_certs);
+        script.push(include_str!(r#"scripts/apply.sh"#));
+
+        let script: String = script.join("\n\n");
+        let file = self
+            .file_manager
+            .get_folder(&device.device.device_id)
+            .await?
+            .join("install.sh");
+        fs::write(file, script).await?;
+
+        Ok(())
     }
 }
 

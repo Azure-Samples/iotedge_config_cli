@@ -1,2 +1,2 @@
 # ======================= Read User Input =======================================
-iotedge config apply
+iotedge config apply -c config.toml

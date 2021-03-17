@@ -1,6 +1,7 @@
 #[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AziotConfig {
     pub hostname: Option<String>,
+    pub parent_hostname: Option<String>,
     pub aziot_keys: Option<AziotKeys>,
     pub cert_issuance: Option<CertIssuance>,
     pub provisioning: Option<Provisioning>,
