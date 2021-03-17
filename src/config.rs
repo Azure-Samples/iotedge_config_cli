@@ -29,6 +29,7 @@ pub struct Configuration {
 pub struct DeviceConfig {
     pub device_id: String,
     pub deployment: Option<String>,
+    pub hostname: Option<String>,
     #[serde(default, rename = "child")]
     pub children: Vec<DeviceConfig>,
 }

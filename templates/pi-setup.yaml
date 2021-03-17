@@ -10,6 +10,8 @@ configuration:
 edgedevices:
   device_id: pi1
   deployment: ./templates/sample-deployment.json
+  hostname: "root-hostname"
   child:
     - device_id: pi2
       deployment: ./templates/sample-deployment.json
+      hostname: "child-hostname"

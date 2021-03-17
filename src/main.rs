@@ -33,6 +33,7 @@ async fn main() -> Result<()> {
     let hub_manager = IoTHubDeviceManager::new(&config, &file_manager);
     let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
     let config_manager = DeviceConfigManager::new(&config, &file_manager);
+    let script_manager = ScriptManager::new(&config, &file_manager);
 
     file_manager
         .print_verbose(format!("Using options:\n{:#?}", args))
@@ -61,12 +62,13 @@ async fn main() -> Result<()> {
         .map(|d| d.device_id.as_str())
         .collect();
 
-    // cert_manager.make_all_device_certs(&["device-1"]).await?;
     cert_manager.make_all_device_certs(&device_ids).await?;
 
     config_manager
         .make_all_device_configs(&created_devices)
         .await?;
+
+    script_manager.add_install_scripts().await?;
 
     if args.zip_options != ZipOptions::None {
         file_manager.print("Zipping all device folders.").await?;
@@ -518,8 +520,8 @@ impl<'a> CertManager<'a> {
 
     async fn make_root_cert(&self) -> Result<(PathBuf, PathBuf)> {
         let cert_folder = self.file_manager.get_folder("certs").await?;
-        let cert_path = cert_folder.join("root.pem");
-        let key_path = cert_folder.join("root.key.pem");
+        let cert_path = cert_folder.join("nested_edge_root.pem");
+        let key_path = cert_folder.join("nested_edge_root.key.pem");
         self.file_manager
             .print(format!("Making Root CA {:?}.", cert_path))
             .await?;
@@ -556,6 +558,8 @@ impl<'a> CertManager<'a> {
     ) -> Result<()> {
         let device_folder = self.file_manager.get_folder(device_id).await?;
         let csr = device_folder.join("device-id.csr");
+        let device_key = device_folder.join(format!("{}.key.pem", device_id));
+        let device_cert = device_folder.join(format!("{}.cert.pem", device_id));
 
         // CSR
         self.file_manager
@@ -566,10 +570,7 @@ impl<'a> CertManager<'a> {
             .map_or_else(|| Command::new("openssl"), Command::new)
             .arg("req")
             .args(&["-newkey", "rsa:4096", "-nodes"])
-            .args(&[
-                OsStr::new("-keyout"),
-                device_folder.join("device-id.key.pem").as_os_str(),
-            ])
+            .args(&[OsStr::new("-keyout"), device_key.as_os_str()])
             .args(&[OsStr::new("-out"), csr.as_os_str()])
             .args(&["-subj", &format!("/CN={}", device_id)])
             .output()
@@ -603,10 +604,7 @@ impl<'a> CertManager<'a> {
             .arg("x509")
             .args(&["-req", "-days", "365", "-CAcreateserial"])
             .args(&[OsStr::new("-in"), csr.as_os_str()])
-            .args(&[
-                OsStr::new("-out"),
-                device_folder.join("device-id.cert.pem").as_os_str(),
-            ])
+            .args(&[OsStr::new("-out"), device_cert.as_os_str()])
             .args(&[OsStr::new("-CA"), ca_cert_path.as_os_str()])
             .args(&[OsStr::new("-CAkey"), ca_key_path.as_os_str()])
             .output()
@@ -630,7 +628,7 @@ impl<'a> CertManager<'a> {
         self.file_manager
             .print_verbose(format!(
                 "Successfully made cert {:?}. Copying root cert to folder.",
-                device_folder.join("device-id.cert.pem")
+                device_cert
             ))
             .await?;
 
@@ -684,7 +682,9 @@ impl<'a> DeviceConfigManager<'a> {
                 .await?;
         }
 
-        self.file_manager.print_verbose("Created config files.").await?;
+        self.file_manager
+            .print_verbose("Created config files.")
+            .await?;
 
         Ok(())
     }
@@ -879,6 +879,74 @@ impl FileManager {
         let mut log_file = log_file.lock().await;
         log_file.write_all(text.as_bytes()).await?;
         Ok(())
+    }
+}
+
+struct ScriptManager<'a> {
+    config: &'a Config,
+    file_manager: &'a FileManager,
+}
+
+impl<'a> ScriptManager<'a> {
+    pub fn new(config: &'a Config, file_manager: &'a FileManager) -> Self {
+        Self {
+            config,
+            file_manager,
+        }
+    }
+
+    pub async fn add_install_scripts(&self) -> Result<()> {
+        self.file_manager
+            .print("Adding install scripts for all devices")
+            .await?;
+
+        self.add_install_scripts_internal(&self.config.root_device, None)
+            .await?;
+        Ok(())
+    }
+
+    pub fn add_install_scripts_internal<'b>(
+        &'b self,
+        device: &'b DeviceConfig,
+        parent_hostname: Option<&'b str>,
+    ) -> BoxFuture<'b, Result<()>> {
+        async move {
+            self.file_manager
+                .print_verbose(format!("Adding install script for {}", device.device_id))
+                .await?;
+            let hostname = device.hostname.as_deref().unwrap_or_default();
+            let parent_hostname = parent_hostname.unwrap_or_default();
+
+            let consts = format!(
+                include_str!(r#"scripts/consts.sh"#),
+                device_id = device.device_id,
+                hostname = hostname,
+                parent_hostname = parent_hostname
+            );
+
+            let script = format!(
+                "{}\n\n{}\n\n{}\n\n{}",
+                consts,
+                include_str!(r#"scripts/set_config.sh"#),
+                include_str!(r#"scripts/install_certs.sh"#),
+                include_str!(r#"scripts/apply.sh"#),
+            );
+
+            let file = self
+                .file_manager
+                .get_folder(&device.device_id)
+                .await?
+                .join("install.sh");
+            fs::write(file, script).await?;
+
+            for child in &device.children {
+                self.add_install_scripts_internal(&child, device.hostname.as_deref())
+                    .await?;
+            }
+
+            Ok(())
+        }
+        .boxed()
     }
 }
 
