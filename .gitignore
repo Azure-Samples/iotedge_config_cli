@@ -12,5 +12,5 @@ Cargo.lock
 
 /target
 /test
-/nested
-nested.zip
+/iotedge_config_cli
+iotedge_config_cli.zip

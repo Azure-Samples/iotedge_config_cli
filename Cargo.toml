@@ -1,5 +1,5 @@
 [package]
-name = "nested_edge_cli"
+name = "iotedge_config_cli"
 version = "0.1.0"
 authors = ["Lee Fitchett <lefitche@microsoft.com>"]
 edition = "2018"

@@ -100,6 +100,7 @@ async fn main() -> Result<()> {
     } else {
         file_manager.base_path().to_path_buf()
     };
+    let output = std::fs::canonicalize(&output).unwrap_or(output);
     file_manager
         .print(format!(
             "Done! Output located at {:?}. See README.md in output for install instructions.",
@@ -137,11 +138,11 @@ struct Arguments {
     visualize: bool,
 
     /// Output: path to create directory at.
-    #[structopt(short, long, default_value = "./nested")]
+    #[structopt(short, long, default_value = "./iotedge_config_cli")]
     output: PathBuf,
 
     /// Config: path to config file.
-    #[structopt(short, long, default_value = "./nested_config.yaml")]
+    #[structopt(short, long, default_value = "./iotedge_cli_config.yaml")]
     config: PathBuf,
 
     /// Openssl Path: Path to openssl executable. Only needed if `openssl` is not in PATH.
@@ -598,8 +599,8 @@ impl<'a> CertManager<'a> {
 
     async fn make_root_cert(&self) -> Result<(PathBuf, PathBuf)> {
         let cert_folder = self.file_manager.get_folder("certificates").await?;
-        let cert_path = cert_folder.join("nested_edge_root.pem");
-        let key_path = cert_folder.join("nested_edge_root.key.pem");
+        let cert_path = cert_folder.join("iotedge_config_cli_root.pem");
+        let key_path = cert_folder.join("iotedge_config_cli_root.key.pem");
         self.file_manager
             .print(format!(
                 "No Root CA specified. Generating self-signed root at {:?}.",
@@ -616,7 +617,7 @@ impl<'a> CertManager<'a> {
             ])
             .args(&[OsStr::new("-keyout"), key_path.as_os_str()])
             .args(&[OsStr::new("-out"), cert_path.as_os_str()])
-            .args(&["-subj", "/CN=Azure_IoT_Nested_Cert"])
+            .args(&["-subj", "/CN=Azure_IoT_Config_Cli_Cert"])
             .output()
             .await?;
 
@@ -800,7 +801,8 @@ impl<'a> DeviceConfigManager<'a> {
                 .to_owned()
         });
 
-        let trust_bundle_cert = "file:///etc/aziot/certificates/nested_edge_root.pem".to_owned();
+        let trust_bundle_cert =
+            "file:///etc/aziot/certificates/iotedge_config_cli_root.pem".to_owned();
 
         let edge_ca = aziot_config::EdgeCa {
             cert: format!(

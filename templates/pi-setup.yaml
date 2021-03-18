@@ -10,8 +10,8 @@ configuration:
 edgedevices:
   device_id: pi1
   # deployment: ./templates/sample-deployment.json
-  hostname: "192.168.0.129"
+  # hostname: "192.168.0.129"
   child:
     - device_id: pi2
       # deployment: ./templates/sample-deployment.json
-      hostname: "192.168.0.180"
+      # hostname: "192.168.0.180"
