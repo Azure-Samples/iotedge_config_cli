@@ -185,10 +185,7 @@ impl Config {
 
         for device in devices {
             if !map.insert(&device.device.device_id) {
-                let error = format!(
-                    r#"device id "{}" is used twice!"#,
-                    device.device.device_id
-                );
+                let error = format!(r#"device id "{}" is used twice!"#, device.device.device_id);
 
                 return Err(anyhow::Error::msg(error));
             }
@@ -730,21 +727,15 @@ impl<'a> DeviceConfigManager<'a> {
             ))
             .await?;
 
-        let base_config: aziot_config::AziotConfig =
-            if let Some(p) = &self.config.configuration.template_config_path {
-                let base_config = fs::read(p).await?;
-                toml::from_slice(&base_config)?
-            } else {
-                Default::default()
-            };
+        let base_config = fs::read(&self.config.configuration.template_config_path).await?;
+        let base_config = String::from_utf8(base_config)?;
 
         self.file_manager
             .print_verbose(format!("Base Config File: {:#?}", base_config))
             .await?;
 
         for device in devices {
-            self.make_device_config(&device, base_config.clone())
-                .await?;
+            self.make_device_config(&device, &base_config).await?;
         }
 
         self.file_manager
@@ -757,7 +748,7 @@ impl<'a> DeviceConfigManager<'a> {
     async fn make_device_config(
         &self,
         device: &CreatedDevice<'_>,
-        mut config: aziot_config::AziotConfig,
+        base_config: &str,
     ) -> Result<()> {
         let provisioning = aziot_config::Provisioning {
             source: "manual".to_owned(),
@@ -775,29 +766,50 @@ impl<'a> DeviceConfigManager<'a> {
                 },
             },
         };
-        config.provisioning = Some(provisioning);
 
-        config.hostname = Some(
-            device
-                .device
-                .hostname
-                .as_deref()
-                .unwrap_or("{{HOSTNAME}}")
-                .to_owned(),
-        );
-        config.parent_hostname = device.parent.map(|p| {
+        let hostname = device
+            .device
+            .hostname
+            .as_deref()
+            .unwrap_or("{{HOSTNAME}}")
+            .to_owned();
+
+        let parent_hostname = device.parent.map(|p| {
             p.hostname
                 .as_deref()
                 .unwrap_or("{{PARENT_HOSTNAME}}")
                 .to_owned()
         });
 
+        let trust_bundle_cert = "file:///etc/aziot/certificates/nested_edge_root.pem".to_owned();
+
+        let edge_ca = aziot_config::EdgeCa {
+            cert: format!(
+                "file:///etc/aziot/certificates/{}.cert.pem",
+                device.device.device_id
+            ),
+            pk: format!(
+                "file:///etc/aziot/certificates/{}.key.pem",
+                device.device.device_id
+            ),
+        };
+
+        let config = aziot_config::AziotConfig {
+            provisioning,
+            hostname,
+            parent_hostname,
+            trust_bundle_cert,
+            edge_ca,
+        };
+
+        let config = toml::to_string(&config)?;
+        let config = &[&config, base_config].join("\n\n");
+
         let file = self
             .file_manager
             .get_folder(&device.device.device_id)
             .await?
             .join("config.toml");
-        let config = toml::to_string(&config)?;
         self.file_manager
             .print_verbose(format!(
                 "Writing config for {} to {:?}\n{}",

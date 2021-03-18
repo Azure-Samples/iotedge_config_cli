@@ -22,7 +22,7 @@ pub struct Certificates {
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct Configuration {
-    pub template_config_path: Option<String>,
+    pub template_config_path: String,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
