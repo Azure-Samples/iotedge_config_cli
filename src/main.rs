@@ -74,8 +74,16 @@ async fn main() -> Result<()> {
 
     script_manager.add_install_scripts(&created_devices).await?;
 
+    fs::write(
+        file_manager.base_path().join("README.md"),
+        include_str!(r#"docs/root_readme.md"#),
+    )
+    .await?;
+
     if args.zip_options != ZipOptions::None {
-        file_manager.print("Zipping all device folders.").await?;
+        file_manager
+            .print_verbose("Zipping all device folders.")
+            .await?;
         for device in device_ids {
             file_manager
                 .zip_dir(file_manager.get_folder(device).await?)
@@ -83,10 +91,19 @@ async fn main() -> Result<()> {
         }
 
         if args.zip_options == ZipOptions::All {
-            file_manager.print("Zipping output folder.").await?;
+            file_manager.print_verbose("Zipping output folder.").await?;
             file_manager.zip_dir(file_manager.base_path()).await?;
         }
     }
+
+    let output = if args.zip_options == ZipOptions::All {
+        FileManager::path_to_zip(file_manager.base_path())
+    } else {
+        file_manager.base_path().to_path_buf()
+    };
+    file_manager
+        .print(format!("Done! Output located at {:?}. See README.md in output for install instructions.", output))
+        .await?;
 
     Ok(())
 }
@@ -863,7 +880,7 @@ impl FileManager {
         &self.base_path
     }
 
-    async fn get_folder(&self, path: &str) -> Result<PathBuf> {
+    pub async fn get_folder(&self, path: &str) -> Result<PathBuf> {
         let mut folder = self.base_path.clone();
         folder.push(path);
 
@@ -872,17 +889,25 @@ impl FileManager {
         Ok(folder)
     }
 
+    pub fn path_to_zip<P>(path: P) -> PathBuf
+    where
+        P: AsRef<Path>,
+    {
+        let mut output = path.as_ref().to_path_buf();
+        output.set_file_name(&format!(
+            "{}.zip",
+            output.file_name().unwrap().to_string_lossy()
+        ));
+
+        output
+    }
+
     // from https://github.com/zip-rs/zip/blob/5290d687b287a444f61bba32605423f01fd5b1c3/examples/write_dir.rs
-    async fn zip_dir<P>(&self, dir: P) -> Result<()>
+    pub async fn zip_dir<P>(&self, dir: P) -> Result<()>
     where
         P: AsRef<Path> + Clone,
     {
-        let mut dest = dir.as_ref().to_path_buf();
-        dest.set_file_name(&format!(
-            "{}.zip",
-            dest.file_name().unwrap().to_string_lossy()
-        ));
-
+        let dest = Self::path_to_zip(&dir);
         self.print_verbose(format!("Zipping {:?} into {:?}", dir.as_ref(), dest))
             .await?;
 
@@ -994,11 +1019,12 @@ impl<'a> ScriptManager<'a> {
 
     pub async fn add_install_scripts(&self, devices: &[CreatedDevice<'_>]) -> Result<()> {
         self.file_manager
-            .print("Adding install scripts for all devices")
+            .print_verbose("Adding install scripts for all devices")
             .await?;
 
         for device in devices {
             self.add_install_scripts_internal(&device).await?;
+            self.copy_device_readme(device).await?;
         }
 
         Ok(())
@@ -1039,6 +1065,17 @@ impl<'a> ScriptManager<'a> {
             .await?
             .join("install.sh");
         fs::write(file, script).await?;
+
+        Ok(())
+    }
+
+    async fn copy_device_readme(&self, device: &CreatedDevice<'_>) -> Result<()> {
+        let file = self
+            .file_manager
+            .get_folder(&device.device.device_id)
+            .await?
+            .join("README.md");
+        fs::write(file, include_str!(r#"docs/device_readme.md"#)).await?;
 
         Ok(())
     }
