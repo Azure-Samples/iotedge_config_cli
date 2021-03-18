@@ -1,5 +1,5 @@
 # ======================= Install nested root CA =======================================
-cp nested_edge_root.pem /usr/local/share/ca-certificates/nested_edge_root.pem
+cp iotedge_config_cli_root.pem /usr/local/share/ca-certificates/iotedge_config_cli_root.pem
 update-ca-certificates
 
 # ======================= Copy device certs  =======================================
