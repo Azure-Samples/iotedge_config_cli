@@ -43,7 +43,6 @@ async fn main() -> Result<()> {
     config.check_device_ids().await?;
     config.check_hostnames(&file_manager).await?;
 
-    visualize_svg(&config.root_device, &file_manager).await?;
     visualize_terminal(&config.root_device, &file_manager).await?;
     if args.visualize {
         return Ok(());
@@ -102,7 +101,10 @@ async fn main() -> Result<()> {
         file_manager.base_path().to_path_buf()
     };
     file_manager
-        .print(format!("Done! Output located at {:?}. See README.md in output for install instructions.", output))
+        .print(format!(
+            "Done! Output located at {:?}. See README.md in output for install instructions.",
+            output
+        ))
         .await?;
 
     Ok(())
@@ -1110,57 +1112,6 @@ fn make_tree<'a>(device: &'a DeviceConfig, prefix: &'a str) -> BoxFuture<'a, Res
         Ok(result.concat())
     }
     .boxed()
-}
-
-use id_tree::InsertBehavior::{AsRoot, UnderNode};
-use id_tree::{Node, NodeId, Tree, TreeBuilder};
-use id_tree_layout::{Layouter, Visualize};
-
-struct NodeData(String);
-
-async fn visualize_svg(root: &DeviceConfig, file_manager: &FileManager) -> Result<()> {
-    let path = file_manager.base_path().join("visualization.svg");
-    file_manager
-        .print(format!("Outputing visualization to {:?}", path))
-        .await?;
-
-    let mut tree: Tree<NodeData> = TreeBuilder::new().build();
-
-    let root_id: NodeId = tree.insert(Node::new(NodeData(root.device_id.clone())), AsRoot)?;
-    add_children(&root.children, &root_id, &mut tree)?;
-
-    Layouter::new(&tree)
-        .with_file_path(&path)
-        .write()
-        .context("Cannot write visualization file.")?;
-
-    Ok(())
-}
-
-fn add_children(
-    children: &[DeviceConfig],
-    parent: &NodeId,
-    tree: &mut Tree<NodeData>,
-) -> Result<()> {
-    for child in children {
-        let new_node: NodeId = tree.insert(
-            Node::new(NodeData(child.device_id.clone())),
-            UnderNode(parent),
-        )?;
-        add_children(&child.children, &new_node, tree)?;
-    }
-
-    Ok(())
-}
-
-impl Visualize for NodeData {
-    fn visualize(&self) -> std::string::String {
-        // We simply convert the i32 value to string here.
-        self.0.clone()
-    }
-    fn emphasize(&self) -> bool {
-        false
-    }
 }
 
 fn run_command(args: &[&str]) -> Command {
