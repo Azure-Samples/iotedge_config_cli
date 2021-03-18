@@ -2,6 +2,8 @@ iothub:
   iothub_hostname: lefitche-hub-3.azure-devices.net
   iothub_name: lefitche-hub-3
   authentication_method: connection_string
+
+## Optional. If not provided a self-signed CA will be generated
 # certificates:
 #   root_ca_cert_path: ""
 #   root_ca_cert_key_path: ""
@@ -9,8 +11,12 @@ configuration:
   template_config_path: "./templates/device_config.toml"
 edgedevices:
   device_id: edge-root
+  # hostname: "FQDN or IP" ## This is optional. If provided, install.sh will not prompt user for this value
+  # deployment: "./templates/device_config.toml" ## This is optional. If provided, the given deployment file will be applied to the newly created device identity
   child:
     - device_id: edge-A
+      # hostname: "FQDN or IP"
+      # deployment: "./templates/device_config.toml"
       child:
         - device_id: edge-AA
         - device_id: edge-AB
