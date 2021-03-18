@@ -7,4 +7,5 @@ then
     exit 1
 fi
 
+# TODO: make install script non destructive of config
 sed -i "s/{{HOSTNAME}}/$hostname/" config.toml

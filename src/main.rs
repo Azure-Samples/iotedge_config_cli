@@ -303,7 +303,7 @@ impl<'a> IoTHubDeviceManager<'a> {
                 .map(|parent| (&parent.device_id, &child.device.device_id))
         });
         self.file_manager
-            .print("Adding parent-child relationships.")
+            .print_verbose("Adding parent-child relationships.")
             .await?;
 
         let futures = relationships_to_add
