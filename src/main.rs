@@ -613,7 +613,15 @@ impl<'a> CertManager<'a> {
             .map_or_else(|| Command::new("openssl"), Command::new)
             .arg("req")
             .args(&[
-                "-x509", "-new", "-newkey", "rsa:4096", "-days", "365", "-nodes",
+                "-x509",
+                "-new",
+                "-newkey",
+                "rsa:4096",
+                "-days",
+                "365",
+                "-nodes",
+                "-addext",
+                "keyUsage=critical, digitalSignature, cRLSign, keyCertSign",
             ])
             .args(&[OsStr::new("-keyout"), key_path.as_os_str()])
             .args(&[OsStr::new("-out"), cert_path.as_os_str()])
@@ -721,6 +729,25 @@ impl<'a> CertManager<'a> {
         )
         .await?;
 
+        self.file_manager
+            .print_verbose("Copied Root. Making cert chain.")
+            .await?;
+
+        Self::make_cert_chain(
+            &[&device_cert, ca_cert_path],
+            &device_folder.join(format!("{}.full-chain.cert.pem", device_id)),
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    async fn make_cert_chain(certs: &[&Path], out: &Path) -> Result<()> {
+        let mut file = fs::File::create(out).await?;
+        for cert in certs {
+            file.write_all(&fs::read(cert).await?).await?;
+        }
+
         Ok(())
     }
 }
@@ -806,7 +833,7 @@ impl<'a> DeviceConfigManager<'a> {
 
         let edge_ca = aziot_config::EdgeCa {
             cert: format!(
-                "file:///etc/aziot/certificates/{}.cert.pem",
+                "file:///etc/aziot/certificates/{}.full-chain.cert.pem",
                 device.device.device_id
             ),
             pk: format!(
