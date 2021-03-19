@@ -1,5 +1,5 @@
 # Usage
-Make sure you are logged into the latest version of aziot-cli (2.20.0) and have openssl in your path (or use the --openssl-path flag)
+Make sure you are logged in (`az login`) to the latest version of aziot-cli (2.20.0) and have openssl in your path (or use the --openssl-path flag). Use `az account set -s {{subscription_name}}` to set your subscription and make sure the hub you want to use is already created.
 
 `cargo build && sudo target/debug/iotedge_config_cli -h`
 ```
