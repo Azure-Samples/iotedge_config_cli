@@ -1086,34 +1086,29 @@ impl<'a> ScriptManager<'a> {
 }
 
 async fn visualize_terminal(root: &DeviceConfig, file_manager: &FileManager) -> Result<()> {
-    let result = make_tree(root, "").await?;
+    let result = make_tree(root, "")?;
     file_manager.print(&result).await?;
     fs::write(file_manager.base_path().join("visualization.txt"), result).await?;
 
     Ok(())
 }
 
-// https://rust-lang.github.io/async-book/07_workarounds/04_recursion.html
-use futures::future::{BoxFuture, FutureExt};
-fn make_tree<'a>(device: &'a DeviceConfig, prefix: &'a str) -> BoxFuture<'a, Result<String>> {
-    async move {
-        let mut result: Vec<String> = vec![device.device_id.clone(), "\n".to_owned()];
+fn make_tree(device: &DeviceConfig, prefix: &str) -> Result<String> {
+    let mut result: Vec<String> = vec![device.device_id.clone(), "\n".to_owned()];
 
-        let num_children = device.children.len();
-        for (i, child) in device.children.iter().enumerate() {
-            let is_last = i + 1 == num_children;
-            let node_prefix = if is_last { "└──" } else { "├──" };
-            let node_prefix = [prefix, node_prefix].concat();
-            result.push(node_prefix);
+    let num_children = device.children.len();
+    for (i, child) in device.children.iter().enumerate() {
+        let is_last = i + 1 == num_children;
+        let node_prefix = if is_last { "└──" } else { "├──" };
+        let node_prefix = [prefix, node_prefix].concat();
+        result.push(node_prefix);
 
-            let child_prefix = if is_last { "    " } else { "│   " };
-            let child_prefix = [prefix, child_prefix].concat();
-            result.push(make_tree(&child, &child_prefix).await?);
-        }
-
-        Ok(result.concat())
+        let child_prefix = if is_last { "    " } else { "│   " };
+        let child_prefix = [prefix, child_prefix].concat();
+        result.push(make_tree(&child, &child_prefix)?);
     }
-    .boxed()
+
+    Ok(result.concat())
 }
 
 fn run_command(args: &[&str]) -> Command {
