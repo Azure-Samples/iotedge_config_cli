@@ -1,0 +1,6 @@
+[ v3_ca ]
+# Extensions for a typical CA.
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer:always
+basicConstraints = critical, CA:true
+keyUsage = critical, digitalSignature, cRLSign, keyCertSign

@@ -36,6 +36,8 @@ async fn main() -> Result<()> {
     let device_config_manager = DeviceConfigManager::new(&config, &file_manager);
     let script_manager = ScriptManager::new(&config, &file_manager);
 
+    // cert_manager.make_all_device_certs(&["device_1"]).await?;
+
     file_manager
         .print_verbose(format!("Using options:\n{:#?}", args))
         .await?;
@@ -581,6 +583,13 @@ impl<'a> CertManager<'a> {
             ))
             .await?;
 
+        let config = self
+            .file_manager
+            .get_folder("certificates")
+            .await?
+            .join("v3_ca_extensions.cnf");
+        fs::write(config, include_str!(r#"scripts/v3_ca_extensions.cnf"#)).await?;
+
         let futures = device_ids
             .iter()
             .map(|d| self.make_device_cert(d, &cert_path, &key_path));
@@ -650,6 +659,11 @@ impl<'a> CertManager<'a> {
         let csr = device_folder.join("device-id.csr");
         let device_key = device_folder.join(format!("{}.key.pem", device_id));
         let device_cert = device_folder.join(format!("{}.cert.pem", device_id));
+        let config = self
+            .file_manager
+            .get_folder("certificates")
+            .await?
+            .join("v3_ca_extensions.cnf");
 
         // CSR
         self.file_manager
@@ -659,7 +673,7 @@ impl<'a> CertManager<'a> {
             .openssl_path
             .map_or_else(|| Command::new("openssl"), Command::new)
             .arg("req")
-            .args(&["-newkey", "rsa:4096", "-nodes"])
+            .args(&["-newkey", "rsa:4096", "-nodes"]) 
             .args(&[OsStr::new("-keyout"), device_key.as_os_str()])
             .args(&[OsStr::new("-out"), csr.as_os_str()])
             .args(&["-subj", &format!("/CN={}", device_id)])
@@ -692,11 +706,19 @@ impl<'a> CertManager<'a> {
             .openssl_path
             .map_or_else(|| Command::new("openssl"), Command::new)
             .arg("x509")
-            .args(&["-req", "-days", "365", "-CAcreateserial"])
+            .args(&[
+                "-req",
+                "-days",
+                "365",
+                "-CAcreateserial",
+                "-extensions",
+                "v3_ca",
+            ])
             .args(&[OsStr::new("-in"), csr.as_os_str()])
             .args(&[OsStr::new("-out"), device_cert.as_os_str()])
             .args(&[OsStr::new("-CA"), ca_cert_path.as_os_str()])
             .args(&[OsStr::new("-CAkey"), ca_key_path.as_os_str()])
+            .args(&[OsStr::new("-extfile"), config.as_os_str()])
             .output()
             .await?;
 
@@ -1089,7 +1111,7 @@ impl<'a> ScriptManager<'a> {
         script.push(&install_certs);
         script.push(include_str!(r#"scripts/apply.sh"#));
 
-        let script: String = script.join("\n\n");
+        let script: String = script.concat();
         let file = self
             .file_manager
             .get_folder(&device.device.device_id)
