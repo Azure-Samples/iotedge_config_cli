@@ -8,4 +8,5 @@ then
 fi
 
 # TODO: make install script non destructive of config
-sed -i "s/{{HOSTNAME}}/$hostname/" config.toml
+sed -i "s/{{HOSTNAME}}/$hostname/" /etc/aziot/config.toml
+

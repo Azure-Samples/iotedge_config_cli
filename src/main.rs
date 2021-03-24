@@ -142,7 +142,7 @@ struct Arguments {
     output: PathBuf,
 
     /// Config: path to config file.
-    #[structopt(short, long, default_value = "./iotedge_cli_config.yaml")]
+    #[structopt(short, long, default_value = "./iotedge_config_cli.yaml")]
     config: PathBuf,
 
     /// Openssl Path: Path to openssl executable. Only needed if `openssl` is not in PATH.
@@ -405,7 +405,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             })
         } else {
             let error = format!(
-                "Failed to create {}:\n{}\n{}\n",
+                "Failed to create {}:\n{}\n{}\nMake sure you are running as sudo and try using the -f flag to delete existing devices before creation.",
                 device.device.device_id,
                 String::from_utf8_lossy(&command.stdout),
                 String::from_utf8_lossy(&command.stderr)

@@ -7,4 +7,4 @@ then
     exit 1
 fi
 
-sed -i "s/{{PARENT_HOSTNAME}}/$parent_hostname/" config.toml
+sed -i "s/{{PARENT_HOSTNAME}}/$parent_hostname/" /etc/aziot/config.toml
