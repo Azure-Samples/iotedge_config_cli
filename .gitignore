@@ -14,3 +14,4 @@ Cargo.lock
 /test
 /iotedge_config_cli
 iotedge_config_cli.zip
+/azure*

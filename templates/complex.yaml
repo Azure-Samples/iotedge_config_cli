@@ -1,3 +1,5 @@
+config_version: "1"
+
 iothub:
   iothub_hostname: lefitche-hub-3.azure-devices.net
   iothub_name: lefitche-hub-3

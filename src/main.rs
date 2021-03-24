@@ -36,8 +36,6 @@ async fn main() -> Result<()> {
     let device_config_manager = DeviceConfigManager::new(&config, &file_manager);
     let script_manager = ScriptManager::new(&config, &file_manager);
 
-    // cert_manager.make_all_device_certs(&["device_1"]).await?;
-
     file_manager
         .print_verbose(format!("Using options:\n{:#?}", args))
         .await?;
@@ -188,17 +186,19 @@ impl Config {
         P: AsRef<Path>,
     {
         println!("Reading {:?}", file_path.as_ref());
-        let is_toml = file_path.as_ref().to_str().unwrap().ends_with(".toml");
-
         let data = fs::read(file_path).await.context("Error reading file")?;
 
-        let config = if is_toml {
-            toml::from_slice(&data).context("Error parsing data")?
-        } else {
-            serde_yaml::from_slice(&data).context("Error parsing data")?
-        };
+        let version: ConfigVersion = serde_yaml::from_slice(&data).context("Error parsing config version")?;
+        match version.config_version.as_str() {
+            "1" => (),
+            _ => {
+                return Err(anyhow::Error::msg(
+                    "Invalid api_version. Accepted values are: 1",
+                ))
+            }
+        }
 
-        Ok(config)
+        serde_yaml::from_slice(&data).context("Error parsing data")
     }
 
     async fn check_device_ids(&self) -> Result<()> {
@@ -673,7 +673,7 @@ impl<'a> CertManager<'a> {
             .openssl_path
             .map_or_else(|| Command::new("openssl"), Command::new)
             .arg("req")
-            .args(&["-newkey", "rsa:4096", "-nodes"]) 
+            .args(&["-newkey", "rsa:4096", "-nodes"])
             .args(&[OsStr::new("-keyout"), device_key.as_os_str()])
             .args(&[OsStr::new("-out"), csr.as_os_str()])
             .args(&["-subj", &format!("/CN={}", device_id)])

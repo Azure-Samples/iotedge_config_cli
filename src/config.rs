@@ -1,4 +1,9 @@
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct ConfigVersion {
+    pub config_version: String,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct Config {
     pub iothub: IoTHub,
     pub certificates: Option<Certificates>,
