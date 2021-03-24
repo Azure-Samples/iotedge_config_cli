@@ -188,7 +188,8 @@ impl Config {
         println!("Reading {:?}", file_path.as_ref());
         let data = fs::read(file_path).await.context("Error reading file")?;
 
-        let version: ConfigVersion = serde_yaml::from_slice(&data).context("Error parsing config version")?;
+        let version: ConfigVersion =
+            serde_yaml::from_slice(&data).context("Error parsing config version")?;
         match version.config_version.as_str() {
             "1" => (),
             _ => {
@@ -864,12 +865,20 @@ impl<'a> DeviceConfigManager<'a> {
             ),
         };
 
+        let image = device.device.edge_agent.as_ref().unwrap_or(&self.config.configuration.default_edge_agent);
+        let agent = aziot_config::Agent {
+            config: aziot_config::AgentConfig {
+                image: image.to_owned(),
+            },
+        };
+
         let config = aziot_config::AziotConfig {
             provisioning,
             hostname,
             parent_hostname,
             trust_bundle_cert,
             edge_ca,
+            agent,
         };
 
         let config = toml::to_string(&config)?;

@@ -28,6 +28,7 @@ pub struct Certificates {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct Configuration {
     pub template_config_path: String,
+    pub default_edge_agent: String,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -35,6 +36,7 @@ pub struct DeviceConfig {
     pub device_id: String,
     pub deployment: Option<String>,
     pub hostname: Option<String>,
+    pub edge_agent: Option<String>,
     #[serde(default, rename = "child")]
     pub children: Vec<DeviceConfig>,
 }

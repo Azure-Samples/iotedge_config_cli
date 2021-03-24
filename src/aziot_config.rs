@@ -5,6 +5,7 @@ pub struct AziotConfig {
     pub trust_bundle_cert: String,
     pub edge_ca: EdgeCa,
     pub provisioning: Provisioning,
+    pub agent: Agent,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -30,4 +31,14 @@ pub struct Authentication {
 #[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DeviceIdPk {
     pub value: String,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Agent {
+    pub config: AgentConfig,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AgentConfig {
+    pub image: String,
 }
