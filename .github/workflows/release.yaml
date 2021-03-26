@@ -25,4 +25,4 @@ jobs:
           title: "Development Build"
           files: |
             LICENSE
-            */iotedge_config_cli
+            target/release/iotedge_config_cli
