@@ -31,8 +31,8 @@ async fn main() -> Result<()> {
 
     let config = Config::read_config(&args.config).await?;
     let file_manager = FileManager::new(&args.output, args.verbose).await?;
-    let hub_manager = IoTHubDeviceManager::new(&config, &file_manager);
     let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
+    let hub_manager = IoTHubDeviceManager::new(&config, &file_manager, &cert_manager);
     let device_config_manager = DeviceConfigManager::new(&config, &file_manager);
     let script_manager = ScriptManager::new(&config, &file_manager);
 
@@ -56,16 +56,8 @@ async fn main() -> Result<()> {
         }
     }
 
+    cert_manager.make_all_device_ca_certs().await?;
     let created_devices = hub_manager.create_devices().await?;
-    if args.create {
-        return Ok(());
-    }
-    let device_ids: Vec<&str> = created_devices
-        .iter()
-        .map(|d| d.device.device_id.as_str())
-        .collect();
-
-    cert_manager.make_all_device_certs(&device_ids).await?;
 
     device_config_manager
         .make_all_device_configs(&created_devices)
@@ -83,9 +75,9 @@ async fn main() -> Result<()> {
         file_manager
             .print_verbose("Zipping all device folders.")
             .await?;
-        for device in device_ids {
+        for device in created_devices {
             file_manager
-                .zip_dir(file_manager.get_folder(device).await?)
+                .zip_dir(file_manager.get_folder(&device.device.device_id).await?)
                 .await?
         }
 
@@ -120,10 +112,6 @@ struct Arguments {
     /// Delete: deletes devices in hub instead of creating them
     #[structopt(short, long)]
     delete: bool,
-
-    /// Create: Only creates devices in ioh hub, does not make certs or configs
-    #[structopt(long)]
-    create: bool,
 
     /// Force: tries to delete devices in hub before creating new ones
     #[structopt(short, long)]
@@ -270,13 +258,19 @@ struct CreatedDevice<'a> {
 struct IoTHubDeviceManager<'a> {
     config: &'a Config,
     file_manager: &'a FileManager,
+    cert_manager: &'a CertManager<'a>,
 }
 
 impl<'a> IoTHubDeviceManager<'a> {
-    pub fn new(config: &'a Config, file_manager: &'a FileManager) -> Self {
+    pub fn new(
+        config: &'a Config,
+        file_manager: &'a FileManager,
+        cert_manager: &'a CertManager,
+    ) -> Self {
         Self {
             config,
             file_manager,
+            cert_manager,
         }
     }
 
@@ -560,7 +554,22 @@ impl<'a> CertManager<'a> {
         }
     }
 
-    pub async fn make_all_device_certs(&self, device_ids: &[&str]) -> Result<()> {
+    pub async fn device_ca_path(&self, device_id: &str) -> Result<PathBuf> {
+        let path = self
+            .file_manager
+            .get_folder(device_id)
+            .await?
+            .join(format!("{}.full-chain.cert.pem", device_id));
+
+        Ok(path)
+    }
+
+    pub async fn make_all_device_ca_certs(&self) -> Result<()> {
+        let device_ids: Vec<&str> = FlatenedDevice::flatten_devices(&self.config.root_device)
+            .iter()
+            .map(|d| d.device.device_id.as_str())
+            .collect();
+
         let (cert_path, key_path) = if let Some(certificates) = &self.config.certificates {
             self.file_manager
                 .print(format!(
@@ -593,7 +602,7 @@ impl<'a> CertManager<'a> {
 
         let futures = device_ids
             .iter()
-            .map(|d| self.make_device_cert(d, &cert_path, &key_path));
+            .map(|d| self.make_device_ca_cert(d, &cert_path, &key_path));
 
         futures::future::join_all(futures)
             .await
@@ -619,8 +628,7 @@ impl<'a> CertManager<'a> {
             .await?;
 
         let command = self
-            .openssl_path
-            .map_or_else(|| Command::new("openssl"), Command::new)
+            .openssl_command()
             .arg("req")
             .args(&[
                 "-x509",
@@ -650,7 +658,7 @@ impl<'a> CertManager<'a> {
         Ok((cert_path, key_path))
     }
 
-    async fn make_device_cert(
+    async fn make_device_ca_cert(
         &self,
         device_id: &str,
         ca_cert_path: &Path,
@@ -671,8 +679,7 @@ impl<'a> CertManager<'a> {
             .print_verbose(format!("Making device csr for {}.", device_id))
             .await?;
         let command = self
-            .openssl_path
-            .map_or_else(|| Command::new("openssl"), Command::new)
+            .openssl_command()
             .arg("req")
             .args(&["-newkey", "rsa:4096", "-nodes"])
             .args(&[OsStr::new("-keyout"), device_key.as_os_str()])
@@ -704,8 +711,7 @@ impl<'a> CertManager<'a> {
             ))
             .await?;
         let command = self
-            .openssl_path
-            .map_or_else(|| Command::new("openssl"), Command::new)
+            .openssl_command()
             .arg("x509")
             .args(&[
                 "-req",
@@ -758,11 +764,45 @@ impl<'a> CertManager<'a> {
 
         Self::make_cert_chain(
             &[&device_cert, ca_cert_path],
-            &device_folder.join(format!("{}.full-chain.cert.pem", device_id)),
+            &self.device_ca_path(device_id).await?,
         )
         .await?;
 
         Ok(())
+    }
+
+    pub async fn make_hub_auth_cert(&self, device_id: &str) -> Result<PathBuf> {
+        let device_folder = self.file_manager.get_folder(device_id).await?;
+        let device_cert = device_folder.join(format!("{}.hubauth.cert.pem", device_id));
+        let device_key = device_folder.join(format!("{}.hubauth.key.pem", device_id));
+        self.file_manager
+            .print_verbose(format!(
+                "Generating self-signed hub cert for {} at {:?}.",
+                device_id, device_cert
+            ))
+            .await?;
+
+        let command = self
+            .openssl_command()
+            .arg("req")
+            .args(&[
+                "-x509", "-new", "-newkey", "rsa:4096", "-days", "365", "-nodes",
+            ])
+            .args(&[OsStr::new("-keyout"), device_key.as_os_str()])
+            .args(&[OsStr::new("-out"), device_cert.as_os_str()])
+            .args(&["-subj", &format!("/CN={}", device_id)])
+            .output()
+            .await?;
+
+        self.file_manager
+            .print_verbose(format!(
+                "{}{}",
+                String::from_utf8_lossy(&command.stdout),
+                String::from_utf8_lossy(&command.stderr)
+            ))
+            .await?;
+
+        Ok(device_cert)
     }
 
     async fn make_cert_chain(certs: &[&Path], out: &Path) -> Result<()> {
@@ -772,6 +812,11 @@ impl<'a> CertManager<'a> {
         }
 
         Ok(())
+    }
+
+    fn openssl_command(&self) -> Command {
+        self.openssl_path
+            .map_or_else(|| Command::new("openssl"), Command::new)
     }
 }
 
@@ -865,7 +910,11 @@ impl<'a> DeviceConfigManager<'a> {
             ),
         };
 
-        let image = device.device.edge_agent.as_ref().unwrap_or(&self.config.configuration.default_edge_agent);
+        let image = device
+            .device
+            .edge_agent
+            .as_ref()
+            .unwrap_or(&self.config.configuration.default_edge_agent);
         let agent = aziot_config::Agent {
             config: aziot_config::AgentConfig {
                 image: image.to_owned(),

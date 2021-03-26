@@ -16,7 +16,15 @@ pub struct Config {
 pub struct IoTHub {
     pub iothub_hostname: String,
     pub iothub_name: String,
-    pub authentication_method: String, //TODO: Make Enum
+    pub authentication_method: IoTHubAuthMethod, //TODO: Make Enum
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub enum IoTHubAuthMethod {
+    #[serde(rename = "symmetric_key")]
+    SymmetricKey,
+    #[serde(rename = "x509_certificate")]
+    X509Cert,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
