@@ -179,10 +179,10 @@ impl Config {
         let version: ConfigVersion =
             serde_yaml::from_slice(&data).context("Error parsing config version")?;
         match version.config_version.as_str() {
-            "1" => (),
+            "1.0" => (),
             _ => {
                 return Err(anyhow::Error::msg(
-                    "Invalid api_version. Accepted values are: 1",
+                    "Invalid api_version. Accepted values are: 1.0",
                 ))
             }
         }
