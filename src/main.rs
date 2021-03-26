@@ -11,6 +11,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use aziotctl_common::config::super_config::Config as ISConfig;
+
 mod aziot_config;
 mod config;
 mod hub_responses;
@@ -28,6 +30,9 @@ async fn main() -> Result<()> {
     if args.clean {
         let _ = fs::remove_dir_all(&args.output).await;
     }
+
+    let test: ISConfig = toml::from_str("")?;
+    println!("{:#?}", test);
 
     let config = Config::read_config(&args.config).await?;
     let file_manager = FileManager::new(&args.output, args.verbose).await?;
