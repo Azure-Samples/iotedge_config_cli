@@ -214,7 +214,7 @@ impl Config {
                 if let Some(old) = map.insert(hostname, &device.device.device_id) {
                     file_manager
                         .print(format!(
-                            "WARNING: {} and {} share the hostname {}",
+                            "\n\nWARNING: {} and {} share the hostname {}\n\n",
                             old, device.device.device_id, hostname
                         ))
                         .await?;
@@ -960,7 +960,7 @@ impl<'a> DeviceConfigManager<'a> {
                         device.device.device_id
                     ),
                     identity_pk: format!(
-                        "file:///etc/aziot/certificates/{}.hub-auth.cert.pem",
+                        "file:///etc/aziot/certificates/{}.hub-auth.key.pem",
                         device.device.device_id
                     ),
                 },
