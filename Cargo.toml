@@ -27,3 +27,6 @@ id_tree_layout = "2.0.1"
 zip = "0.5"
 walkdir = "2"
 
+aziotctl-common = { git = "https://github.com/Azure/iot-identity-service", branch = "main" }
+
+
