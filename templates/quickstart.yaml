@@ -3,7 +3,7 @@ config_version: "1.0"
 iothub:
   iothub_hostname: {{HOSTNAME}}
   iothub_name: {{HUBNAME}}
-  authentication_method: symmetric_key
+  authentication_method: x509_certificate
 
 ## Optional. If not provided a self-signed CA will be generated
 # certificates:
