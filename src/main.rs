@@ -948,9 +948,9 @@ impl<'a> DeviceConfigManager<'a> {
                         .symmetric_key
                         .primary_key
                         .clone()
-                        .ok_or_else(|| anyhow::Error::msg(
-                            "Hub response did not contain symmetric key",
-                        ))?,
+                        .ok_or_else(|| {
+                            anyhow::Error::msg("Hub response did not contain symmetric key")
+                        })?,
                 },
             },
             IoTHubAuthMethod::X509Cert => aziot_config::ManualAuthMethod::X509 {
@@ -1245,8 +1245,14 @@ impl<'a> ScriptManager<'a> {
             ))
             .await?;
 
-        let mut script: Vec<&str> = vec![include_str!(r#"scripts/headers.sh"#)];
+        let mut script: Vec<&str> = Vec::new();
+        let headers = format!(
+            include_str!(r#"scripts/headers.sh"#),
+            device_id = device.device.device_id
+        );
+        script.push(&headers);
 
+        // Add user prompts if no hostname provided
         if hostname.is_none() {
             script.push(include_str!(r#"scripts/set_hostname.sh"#));
         }
@@ -1254,14 +1260,16 @@ impl<'a> ScriptManager<'a> {
             script.push(include_str!(r#"scripts/set_parent_hostname.sh"#));
         }
 
-        let install_certs = format!(
-            include_str!(r#"scripts/install_certs.sh"#),
-            device_id = device.device.device_id
-        );
-        script.push(&install_certs);
+        // Copy certs to /aziot/certificates folder
+        script.push(include_str!(r#"scripts/install_ca_certs.sh"#));
+        if self.config.iothub.authentication_method == IoTHubAuthMethod::X509Cert {
+            script.push(include_str!(r#"scripts/install_hub_auth_certs.sh"#));
+        }
+
+        // Run iotedge config apply
         script.push(include_str!(r#"scripts/apply.sh"#));
 
-        let script: String = script.concat();
+        let script: String = script.join("\n\n");
         let file = self
             .file_manager
             .get_folder(&device.device.device_id)
