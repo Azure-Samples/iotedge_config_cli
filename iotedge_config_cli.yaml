@@ -3,7 +3,8 @@ config_version: "1"
 iothub:
   iothub_hostname: lefitche-hub-3.azure-devices.net
   iothub_name: lefitche-hub-3
-  authentication_method: symmetric_key
+  authentication_method: x509_certificate
+  # authentication_method: symmetric_key
 
 ## Optional. If not provided a self-signed CA will be generated
 # certificates:

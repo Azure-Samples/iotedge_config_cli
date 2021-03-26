@@ -368,7 +368,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             ))
             .await?;
 
-        let args = &[
+        let mut args = vec![
             "az iot hub device-identity create",
             "--device-id",
             &device.device.device_id,
@@ -376,7 +376,32 @@ impl<'a> IoTHubDeviceManager<'a> {
             &self.config.iothub.iothub_name,
             "--edge-enabled",
         ];
-        let command = run_command(args).output().await?;
+
+        let primary_thumbprint: String;
+        let secondary_thumbprint: String;
+        if self.config.iothub.authentication_method == IoTHubAuthMethod::X509Cert {
+            let auth_cert = self
+                .cert_manager
+                .make_hub_auth_cert(&device.device.device_id)
+                .await?;
+
+            primary_thumbprint = self.cert_manager.get_thumbprint(&auth_cert).await?;
+            secondary_thumbprint = self
+                .cert_manager
+                .get_thumbprint(
+                    &self
+                        .cert_manager
+                        .device_ca_path(&device.device.device_id)
+                        .await?,
+                )
+                .await?;
+
+            args.extend(&["--auth-method", "x509_thumbprint"]);
+            args.extend(&["--primary-thumbprint", &primary_thumbprint]);
+            args.extend(&["--secondary-thumbprint", &secondary_thumbprint]);
+        }
+
+        let command = run_command(&args).output().await?;
         if command.status.success() {
             self.file_manager
                 .print_verbose(format!(
@@ -773,8 +798,8 @@ impl<'a> CertManager<'a> {
 
     pub async fn make_hub_auth_cert(&self, device_id: &str) -> Result<PathBuf> {
         let device_folder = self.file_manager.get_folder(device_id).await?;
-        let device_cert = device_folder.join(format!("{}.hubauth.cert.pem", device_id));
-        let device_key = device_folder.join(format!("{}.hubauth.key.pem", device_id));
+        let device_cert = device_folder.join(format!("{}.hub-auth.cert.pem", device_id));
+        let device_key = device_folder.join(format!("{}.hub-auth.key.pem", device_id));
         self.file_manager
             .print_verbose(format!(
                 "Generating self-signed hub cert for {} at {:?}.",
@@ -803,6 +828,51 @@ impl<'a> CertManager<'a> {
             .await?;
 
         Ok(device_cert)
+    }
+
+    pub async fn get_thumbprint(&self, cert: &Path) -> Result<String> {
+        self.file_manager
+            .print_verbose(format!("Getting thumbprint for {:?}", cert))
+            .await?;
+
+        let command = self
+            .openssl_command()
+            .args(&["x509", "--noout", "-fingerprint"])
+            .args(&[OsStr::new("-in"), cert.as_os_str()])
+            .output()
+            .await?;
+
+        self.file_manager
+            .print_verbose(format!(
+                "{}{}",
+                String::from_utf8_lossy(&command.stdout),
+                String::from_utf8_lossy(&command.stderr)
+            ))
+            .await?;
+
+        if !command.status.success() {
+            return Err(anyhow::Error::msg(format!(
+                "Error getting fingerprint for {:?}",
+                cert
+            )));
+        }
+
+        let thumbprint = String::from_utf8_lossy(&command.stdout);
+        let mut thumbprint = thumbprint
+            .split('=')
+            .into_iter()
+            .nth(1)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Unable to parse openssl fingerprint response:\n{}",
+                    String::from_utf8_lossy(&command.stdout)
+                )
+            })
+            .trim()
+            .to_owned();
+        thumbprint.retain(|c| c != ':');
+
+        Ok(thumbprint)
     }
 
     async fn make_cert_chain(certs: &[&Path], out: &Path) -> Result<()> {
@@ -865,21 +935,43 @@ impl<'a> DeviceConfigManager<'a> {
         device: &CreatedDevice<'_>,
         base_config: &str,
     ) -> Result<()> {
-        let provisioning = aziot_config::Provisioning {
-            source: "manual".to_owned(),
-            device_id: device.device.device_id.clone(),
-            iothub_hostname: self.config.iothub.iothub_hostname.clone(),
-            authentication: aziot_config::Authentication {
-                method: "sas".to_owned(),
+        self.file_manager
+            .print_verbose(format!("Generating config for {}", device.device.device_id))
+            .await?;
+
+        let authentication = match self.config.iothub.authentication_method {
+            IoTHubAuthMethod::SymmetricKey => aziot_config::ManualAuthMethod::SharedPrivateKey {
                 device_id_pk: aziot_config::DeviceIdPk {
                     value: device
                         .create_response
                         .authentication
                         .symmetric_key
                         .primary_key
-                        .clone(),
+                        .clone()
+                        .ok_or_else(|| anyhow::Error::msg(
+                            "Hub response did not contain symmetric key",
+                        ))?,
                 },
             },
+            IoTHubAuthMethod::X509Cert => aziot_config::ManualAuthMethod::X509 {
+                identity: aziot_config::X509Identity {
+                    identity_cert: format!(
+                        "file:///etc/aziot/certificates/{}.hub-auth.cert.pem",
+                        device.device.device_id
+                    ),
+                    identity_pk: format!(
+                        "file:///etc/aziot/certificates/{}.hub-auth.cert.pem",
+                        device.device.device_id
+                    ),
+                },
+            },
+        };
+
+        let provisioning = aziot_config::Provisioning {
+            source: "manual".to_owned(),
+            device_id: device.device.device_id.clone(),
+            iothub_hostname: self.config.iothub.iothub_hostname.clone(),
+            authentication,
         };
 
         let hostname = device

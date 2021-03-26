@@ -1,4 +1,4 @@
-#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AziotConfig {
     pub hostname: String,
     pub parent_hostname: Option<String>,
@@ -8,37 +8,50 @@ pub struct AziotConfig {
     pub agent: Agent,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EdgeCa {
     pub cert: String,
     pub pk: String,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Provisioning {
     pub device_id: String,
     pub iothub_hostname: String,
     pub source: String,
-    pub authentication: Authentication,
+    pub authentication: ManualAuthMethod,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Authentication {
-    pub method: String,
-    pub device_id_pk: DeviceIdPk,
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "method")]
+#[serde(rename_all = "lowercase")]
+pub enum ManualAuthMethod {
+    #[serde(rename = "sas")]
+    SharedPrivateKey { device_id_pk: DeviceIdPk },
+
+    X509 {
+        #[serde(flatten)]
+        identity: X509Identity,
+    },
 }
 
-#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DeviceIdPk {
     pub value: String,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct X509Identity {
+    pub identity_cert: String,
+    pub identity_pk: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Agent {
     pub config: AgentConfig,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AgentConfig {
     pub image: String,
 }

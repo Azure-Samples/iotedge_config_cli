@@ -30,15 +30,15 @@ pub struct Authentication {
 #[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SymmetricKey {
-    pub primary_key: String,
-    pub secondary_key: String,
+    pub primary_key: Option<String>,
+    pub secondary_key: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct X509Thumbprint {
-    pub primary_thumbprint: ::serde_json::Value,
-    pub secondary_thumbprint: ::serde_json::Value,
+    pub primary_thumbprint: Option<String>,
+    pub secondary_thumbprint: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

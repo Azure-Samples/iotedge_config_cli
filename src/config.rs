@@ -19,7 +19,7 @@ pub struct IoTHub {
     pub authentication_method: IoTHubAuthMethod, //TODO: Make Enum
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq)]
 pub enum IoTHubAuthMethod {
     #[serde(rename = "symmetric_key")]
     SymmetricKey,
