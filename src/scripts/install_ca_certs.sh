@@ -1,6 +1,7 @@
 # ======================= Install nested root CA =======================================
 cp iotedge_config_cli_root.pem /usr/local/share/ca-certificates/iotedge_config_cli_root.pem.crt
 update-ca-certificates
+systemctl restart docker
 
 # ======================= Copy device certs  =======================================
 cert_dir="/etc/aziot/certificates"
