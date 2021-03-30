@@ -18,9 +18,9 @@ jobs:
       - name: Run tests
         run: cargo test --verbose --release
       - name: Make Release Bundle
-        run: cargo test --verbose --release
+        run: .github/workflows/bundle.sh
       - uses: "marvinpinto/action-automatic-releases@latest"
-        with: .github/workflows/bundle.sh
+        with: 
           repo_token: "${{ secrets.GITHUB_TOKEN }}"
           automatic_release_tag: "latest"
           prerelease: true
