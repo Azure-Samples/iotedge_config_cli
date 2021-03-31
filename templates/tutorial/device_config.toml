@@ -20,7 +20,7 @@
 # pk = "<File URI path to the device CA private key unique to this device.>"
 #
 # [agent.config]
-# image = "mcr.microsoft.com/azureiotedge-agent:1.0"
+# image = "mcr.microsoft.com/azureiotedge-agent:1.2"
 
 
 ## Add other parameters that you want to be included in the configuration bundles here
