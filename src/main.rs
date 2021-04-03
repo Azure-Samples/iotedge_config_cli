@@ -715,7 +715,7 @@ impl<'a> CertManager<'a> {
             .args(&["-newkey", "rsa:4096", "-nodes"])
             .args(&[OsStr::new("-keyout"), device_key.as_os_str()])
             .args(&[OsStr::new("-out"), csr.as_os_str()])
-            .args(&["-subj", &format!("/CN={}", device_id)])
+            .args(&["-subj", &format!("/CN={}.deviceca", device_id)])
             .output()
             .await?;
 
