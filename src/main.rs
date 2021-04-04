@@ -17,9 +17,6 @@ mod aziot_config;
 mod config;
 mod hub_responses;
 
-use config::*;
-use hub_responses::*;
-
 // Windows only, run
 //$Env:OPENSSL_CONF="C:\Users\Lee\source\GnuWin32\share\openssl.cnf"
 // openssl = C:\Users\Lee\source\GnuWin32\bin\openssl.exe
@@ -173,7 +170,7 @@ impl std::str::FromStr for ZipOptions {
     }
 }
 
-impl Config {
+impl config::Config {
     pub async fn read_config<P>(file_path: P) -> Result<Self>
     where
         P: AsRef<Path>,
@@ -181,7 +178,7 @@ impl Config {
         println!("Reading {:?}", file_path.as_ref());
         let data = fs::read(file_path).await.context("Error reading file")?;
 
-        let version: ConfigVersion =
+        let version: config::ConfigVersion =
             serde_yaml::from_slice(&data).context("Error parsing config version")?;
         match version.config_version.as_str() {
             "1.0" => (),
@@ -232,18 +229,18 @@ impl Config {
 }
 
 struct FlatenedDevice<'a> {
-    device: &'a DeviceConfig,
-    parent: Option<&'a DeviceConfig>,
+    device: &'a config::DeviceConfig,
+    parent: Option<&'a config::DeviceConfig>,
 }
 
 impl<'a> FlatenedDevice<'a> {
-    pub fn flatten_devices(root: &'a DeviceConfig) -> Vec<Self> {
+    pub fn flatten_devices(root: &'a config::DeviceConfig) -> Vec<Self> {
         Self::flatten_devices_internal(root, None)
     }
 
     fn flatten_devices_internal(
-        device: &'a DeviceConfig,
-        parent: Option<&'a DeviceConfig>,
+        device: &'a config::DeviceConfig,
+        parent: Option<&'a config::DeviceConfig>,
     ) -> Vec<Self> {
         let mut result: Vec<FlatenedDevice> = vec![FlatenedDevice { device, parent }];
         for child in &device.children {
@@ -255,20 +252,20 @@ impl<'a> FlatenedDevice<'a> {
 }
 
 struct CreatedDevice<'a> {
-    device: &'a DeviceConfig,
-    parent: Option<&'a DeviceConfig>,
-    create_response: CreateResponse,
+    device: &'a config::DeviceConfig,
+    parent: Option<&'a config::DeviceConfig>,
+    create_response: hub_responses::CreateResponse,
 }
 
 struct IoTHubDeviceManager<'a> {
-    config: &'a Config,
+    config: &'a config::Config,
     file_manager: &'a FileManager,
     cert_manager: &'a CertManager<'a>,
 }
 
 impl<'a> IoTHubDeviceManager<'a> {
     pub fn new(
-        config: &'a Config,
+        config: &'a config::Config,
         file_manager: &'a FileManager,
         cert_manager: &'a CertManager,
     ) -> Self {
@@ -384,7 +381,7 @@ impl<'a> IoTHubDeviceManager<'a> {
 
         let primary_thumbprint: String;
         let secondary_thumbprint: String;
-        if self.config.iothub.authentication_method == IoTHubAuthMethod::X509Cert {
+        if self.config.iothub.authentication_method == config::IoTHubAuthMethod::X509Cert {
             let auth_cert = self
                 .cert_manager
                 .make_hub_auth_cert(&device.device.device_id)
@@ -416,7 +413,7 @@ impl<'a> IoTHubDeviceManager<'a> {
                 ))
                 .await?;
 
-            let created_device: CreateResponse = serde_json::from_slice(&command.stdout)?;
+            let created_device: hub_responses::CreateResponse = serde_json::from_slice(&command.stdout)?;
 
             if let Some(deployment) = &device.device.deployment {
                 self.set_deployment(&device.device.device_id, &deployment)
@@ -566,14 +563,14 @@ impl<'a> IoTHubDeviceManager<'a> {
 }
 
 struct CertManager<'a> {
-    config: &'a Config,
+    config: &'a config::Config,
     file_manager: &'a FileManager,
     openssl_path: Option<&'a Path>,
 }
 
 impl<'a> CertManager<'a> {
     pub fn new(
-        config: &'a Config,
+        config: &'a config::Config,
         file_manager: &'a FileManager,
         openssl_path: Option<&'a Path>,
     ) -> Self {
@@ -600,6 +597,13 @@ impl<'a> CertManager<'a> {
             .map(|d| d.device.device_id.as_str())
             .collect();
 
+        let config = self
+            .file_manager
+            .get_folder("certificates")
+            .await?
+            .join("v3_ca_extensions.cnf");
+        fs::write(config, include_str!(r#"scripts/v3_ca_extensions.cnf"#)).await?;
+
         let (cert_path, key_path) = if let Some(certificates) = &self.config.certificates {
             self.file_manager
                 .print(format!(
@@ -622,13 +626,6 @@ impl<'a> CertManager<'a> {
                 device_ids.len(),
             ))
             .await?;
-
-        let config = self
-            .file_manager
-            .get_folder("certificates")
-            .await?
-            .join("v3_ca_extensions.cnf");
-        fs::write(config, include_str!(r#"scripts/v3_ca_extensions.cnf"#)).await?;
 
         let futures = device_ids
             .iter()
@@ -657,6 +654,12 @@ impl<'a> CertManager<'a> {
             ))
             .await?;
 
+        let config = self
+            .file_manager
+            .get_folder("certificates")
+            .await?
+            .join("v3_ca_extensions.cnf");
+
         let command = self
             .openssl_command()
             .arg("req")
@@ -668,11 +671,14 @@ impl<'a> CertManager<'a> {
                 "-days",
                 "365",
                 "-nodes",
-                "-addext",
-                "keyUsage=critical, digitalSignature, cRLSign, keyCertSign",
+                // "-addext",
+                // "keyUsage=critical, digitalSignature, cRLSign, keyCertSign",
+                "-extensions",
+                "v3_ca",
             ])
             .args(&[OsStr::new("-keyout"), key_path.as_os_str()])
             .args(&[OsStr::new("-out"), cert_path.as_os_str()])
+            .args(&[OsStr::new("-config"), config.as_os_str()])
             .args(&["-subj", "/CN=Azure_IoT_Config_Cli_Cert"])
             .output()
             .await?;
@@ -714,7 +720,7 @@ impl<'a> CertManager<'a> {
             .args(&["-newkey", "rsa:4096", "-nodes"])
             .args(&[OsStr::new("-keyout"), device_key.as_os_str()])
             .args(&[OsStr::new("-out"), csr.as_os_str()])
-            .args(&["-subj", &format!("/CN={}", device_id)])
+            .args(&["-subj", &format!("/CN={}.deviceca", device_id)])
             .output()
             .await?;
 
@@ -896,12 +902,12 @@ impl<'a> CertManager<'a> {
 }
 
 struct DeviceConfigManager<'a> {
-    config: &'a Config,
+    config: &'a config::Config,
     file_manager: &'a FileManager,
 }
 
 impl<'a> DeviceConfigManager<'a> {
-    pub fn new(config: &'a Config, file_manager: &'a FileManager) -> Self {
+    pub fn new(config: &'a config::Config, file_manager: &'a FileManager) -> Self {
         Self {
             config,
             file_manager,
@@ -945,7 +951,7 @@ impl<'a> DeviceConfigManager<'a> {
             .await?;
 
         let authentication = match self.config.iothub.authentication_method {
-            IoTHubAuthMethod::SymmetricKey => aziot_config::ManualAuthMethod::SharedPrivateKey {
+            config::IoTHubAuthMethod::SymmetricKey => aziot_config::ManualAuthMethod::SharedPrivateKey {
                 device_id_pk: aziot_config::DeviceIdPk {
                     value: device
                         .create_response
@@ -958,7 +964,7 @@ impl<'a> DeviceConfigManager<'a> {
                         })?,
                 },
             },
-            IoTHubAuthMethod::X509Cert => aziot_config::ManualAuthMethod::X509 {
+            config::IoTHubAuthMethod::X509Cert => aziot_config::ManualAuthMethod::X509 {
                 identity: aziot_config::X509Identity {
                     identity_cert: format!(
                         "file:///etc/aziot/certificates/{}.hub-auth.cert.pem",
@@ -1213,12 +1219,12 @@ impl FileManager {
 }
 
 struct ScriptManager<'a> {
-    config: &'a Config,
+    config: &'a config::Config,
     file_manager: &'a FileManager,
 }
 
 impl<'a> ScriptManager<'a> {
-    pub fn new(config: &'a Config, file_manager: &'a FileManager) -> Self {
+    pub fn new(config: &'a config::Config, file_manager: &'a FileManager) -> Self {
         Self {
             config,
             file_manager,
@@ -1267,7 +1273,7 @@ impl<'a> ScriptManager<'a> {
 
         // Copy certs to /aziot/certificates folder
         script.push(include_str!(r#"scripts/install_ca_certs.sh"#));
-        if self.config.iothub.authentication_method == IoTHubAuthMethod::X509Cert {
+        if self.config.iothub.authentication_method == config::IoTHubAuthMethod::X509Cert {
             script.push(include_str!(r#"scripts/install_hub_auth_certs.sh"#));
         }
 
@@ -1297,7 +1303,7 @@ impl<'a> ScriptManager<'a> {
     }
 }
 
-async fn visualize_terminal(root: &DeviceConfig, file_manager: &FileManager) -> Result<()> {
+async fn visualize_terminal(root: &config::DeviceConfig, file_manager: &FileManager) -> Result<()> {
     let result = make_tree(root, "")?;
     file_manager.print(&result).await?;
     fs::write(file_manager.base_path().join("visualization.txt"), result).await?;
@@ -1305,7 +1311,7 @@ async fn visualize_terminal(root: &DeviceConfig, file_manager: &FileManager) -> 
     Ok(())
 }
 
-fn make_tree(device: &DeviceConfig, prefix: &str) -> Result<String> {
+fn make_tree(device: &config::DeviceConfig, prefix: &str) -> Result<String> {
     let mut result: Vec<String> = vec![device.device_id.clone(), "\n".to_owned()];
 
     let num_children = device.children.len();
