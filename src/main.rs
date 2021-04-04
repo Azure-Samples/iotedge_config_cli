@@ -11,7 +11,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use aziotctl_common::config::super_config::Config as ISConfig;
+use iotedge::config::super_config::Config as ISConfig;
 
 mod aziot_config;
 mod config;
@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
     let test: ISConfig = toml::from_str("")?;
     println!("{:#?}", test);
 
-    let config = Config::read_config(&args.config).await?;
+    let config = config::Config::read_config(&args.config).await?;
     let file_manager = FileManager::new(&args.output, args.verbose).await?;
     let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
     let hub_manager = IoTHubDeviceManager::new(&config, &file_manager, &cert_manager);
@@ -413,7 +413,8 @@ impl<'a> IoTHubDeviceManager<'a> {
                 ))
                 .await?;
 
-            let created_device: hub_responses::CreateResponse = serde_json::from_slice(&command.stdout)?;
+            let created_device: hub_responses::CreateResponse =
+                serde_json::from_slice(&command.stdout)?;
 
             if let Some(deployment) = &device.device.deployment {
                 self.set_deployment(&device.device.device_id, &deployment)
@@ -924,14 +925,14 @@ impl<'a> DeviceConfigManager<'a> {
             .await?;
 
         let base_config = fs::read(&self.config.configuration.template_config_path).await?;
-        let base_config = String::from_utf8(base_config)?;
+        let mut base_config: ISConfig = toml::from_slice(&base_config)?;
 
         self.file_manager
             .print_verbose(format!("Base Config File: {:#?}", base_config))
             .await?;
 
         for device in devices {
-            self.make_device_config(&device, &base_config).await?;
+            self.make_device_config(&device, &mut base_config).await?;
         }
 
         self.file_manager
@@ -944,26 +945,28 @@ impl<'a> DeviceConfigManager<'a> {
     async fn make_device_config(
         &self,
         device: &CreatedDevice<'_>,
-        base_config: &str,
+        config: &mut ISConfig,
     ) -> Result<()> {
         self.file_manager
             .print_verbose(format!("Generating config for {}", device.device.device_id))
             .await?;
 
         let authentication = match self.config.iothub.authentication_method {
-            config::IoTHubAuthMethod::SymmetricKey => aziot_config::ManualAuthMethod::SharedPrivateKey {
-                device_id_pk: aziot_config::DeviceIdPk {
-                    value: device
-                        .create_response
-                        .authentication
-                        .symmetric_key
-                        .primary_key
-                        .clone()
-                        .ok_or_else(|| {
-                            anyhow::Error::msg("Hub response did not contain symmetric key")
-                        })?,
-                },
-            },
+            config::IoTHubAuthMethod::SymmetricKey => {
+                aziot_config::ManualAuthMethod::SharedPrivateKey {
+                    device_id_pk: aziot_config::DeviceIdPk {
+                        value: device
+                            .create_response
+                            .authentication
+                            .symmetric_key
+                            .primary_key
+                            .clone()
+                            .ok_or_else(|| {
+                                anyhow::Error::msg("Hub response did not contain symmetric key")
+                            })?,
+                    },
+                }
+            }
             config::IoTHubAuthMethod::X509Cert => aziot_config::ManualAuthMethod::X509 {
                 identity: aziot_config::X509Identity {
                     identity_cert: format!(
@@ -1024,18 +1027,18 @@ impl<'a> DeviceConfigManager<'a> {
             },
         };
 
-        let config = aziot_config::AziotConfig {
-            provisioning,
-            hostname,
-            parent_hostname,
-            trust_bundle_cert,
-            edge_ca,
-            agent,
-        };
+        // config.
+
+        // let config = aziot_config::AziotConfig {
+        //     provisioning,
+        //     hostname,
+        //     parent_hostname,
+        //     trust_bundle_cert,
+        //     edge_ca,
+        //     agent,
+        // };
 
         let config = toml::to_string(&config)?;
-        let config = &[&config, base_config].join("\n\n");
-
         let file = self
             .file_manager
             .get_folder(&device.device.device_id)
