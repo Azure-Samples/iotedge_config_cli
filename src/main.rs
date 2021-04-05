@@ -18,19 +18,12 @@ use iotedge::config::super_config as iotedge_config;
 mod config;
 mod hub_responses;
 
-// Windows only, run
-//$Env:OPENSSL_CONF="C:\Users\Lee\source\GnuWin32\share\openssl.cnf"
-// openssl = C:\Users\Lee\source\GnuWin32\bin\openssl.exe
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Arguments = StructOpt::from_args();
     if args.clean {
         let _ = fs::remove_dir_all(&args.output).await;
     }
-
-    let test: iotedge_config::Config = toml::from_str("")?;
-    println!("{:#?}", test);
 
     let config = config::Config::read_config(&args.config).await?;
     let file_manager = FileManager::new(&args.output, args.verbose).await?;
@@ -352,7 +345,7 @@ impl<'a> IoTHubDeviceManager<'a> {
                 .print(&format!(
                 "Successfully deleted {} devices, {} failed. For more information use the -v flag.",
                 num_successes,
-                num_successes - devices_to_delete.len(),
+                devices_to_delete.len() - num_successes,
             ))
                 .await?;
         }
@@ -1351,5 +1344,43 @@ fn run_command(args: &[&str]) -> Command {
         let mut command = Command::new("powershell.exe");
         command.args(args);
         command
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_configs() {
+        let configs = &[
+            "templates/tutorial/iotedge_config_cli.yaml",
+            "templates/purdue/iotedge_config_cli.yaml",
+        ];
+
+        let futures = configs.iter().map(|config| test_config(config));
+        futures::future::join_all(futures).await;
+    }
+
+    async fn test_config(file: &str) {
+        let config = config::Config::read_config(file)
+            .await
+            .unwrap_or_else(|_| panic!("Could not parse {}", file));
+
+        let device_config = fs::read(&config.configuration.template_config_path)
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Could not read {}",
+                    config.configuration.template_config_path
+                )
+            });
+        let _device_config: iotedge_config::Config = toml::from_slice(&device_config)
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Could not parse {}",
+                    config.configuration.template_config_path
+                )
+            });
     }
 }
