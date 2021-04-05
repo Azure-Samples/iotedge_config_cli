@@ -1027,15 +1027,6 @@ impl<'a> DeviceConfigManager<'a> {
             .unwrap_or(&self.config.configuration.default_edge_agent)
             .to_owned();
 
-        // let config = aziot_config::AziotConfig {
-        //     provisioning,
-        //     hostname,
-        //     parent_hostname,
-        //     trust_bundle_cert,
-        //     edge_ca,
-        //     agent,
-        // };
-
         let config = toml::to_string(&config)?;
         let file = self
             .file_manager
