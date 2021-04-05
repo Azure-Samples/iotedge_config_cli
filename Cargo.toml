@@ -31,5 +31,4 @@ walkdir = "2"
 iotedge = { git = "https://github.com/lfitchett/iotedge.git", branch = "public_config" }
 aziotctl-common = { git = "https://github.com/Azure/iot-identity-service", branch = "main" }
 aziot-keys-common = { git = "https://github.com/Azure/iot-identity-service", branch = "main" }
-
 url = "2"

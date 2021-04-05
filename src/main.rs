@@ -1353,19 +1353,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_configs() {
-        let configs = &[
-            "templates/tutorial/iotedge_config_cli.yaml",
-            "templates/purdue/iotedge_config_cli.yaml",
-        ];
+        let configs = WalkDir::new("templates").into_iter().filter_map(|path| {
+            let path = path.as_ref().unwrap().path();
+            if path.extension() == Some(OsStr::new("yaml")) {
+                Some(path.to_path_buf())
+            } else {
+                None
+            }
+        });
 
-        let futures = configs.iter().map(|config| test_config(config));
-        futures::future::join_all(futures).await;
+        futures::future::join_all(configs.map(test_config)).await;
     }
 
-    async fn test_config(file: &str) {
-        let config = config::Config::read_config(file)
+    async fn test_config(file: PathBuf) {
+        let config = config::Config::read_config(&file)
             .await
-            .unwrap_or_else(|_| panic!("Could not parse {}", file));
+            .unwrap_or_else(|_| panic!("Could not parse {:?}", &file));
 
         let device_config = fs::read(&config.configuration.template_config_path)
             .await
