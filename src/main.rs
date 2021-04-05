@@ -10,14 +10,13 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use url::Url;
 
-mod aziot_config;
+use aziotctl_common::config::super_config as aziot_config;
+use iotedge::config::super_config as iotedge_config;
+
 mod config;
 mod hub_responses;
-
-// Windows only, run
-//$Env:OPENSSL_CONF="C:\Users\Lee\source\GnuWin32\share\openssl.cnf"
-// openssl = C:\Users\Lee\source\GnuWin32\bin\openssl.exe
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -39,7 +38,8 @@ async fn main() -> Result<()> {
 
     config.check_device_ids().await?;
     config.check_hostnames(&file_manager).await?;
-
+    device_config_manager.validate_config().await?;
+    
     visualize_terminal(&config.root_device, &file_manager).await?;
     if args.visualize {
         return Ok(());
@@ -346,7 +346,7 @@ impl<'a> IoTHubDeviceManager<'a> {
                 .print(&format!(
                 "Successfully deleted {} devices, {} failed. For more information use the -v flag.",
                 num_successes,
-                num_successes - devices_to_delete.len(),
+                devices_to_delete.len() - num_successes,
             ))
                 .await?;
         }
@@ -408,7 +408,8 @@ impl<'a> IoTHubDeviceManager<'a> {
                 ))
                 .await?;
 
-            let created_device: hub_responses::CreateResponse = serde_json::from_slice(&command.stdout)?;
+            let created_device: hub_responses::CreateResponse =
+                serde_json::from_slice(&command.stdout)?;
 
             if let Some(deployment) = &device.device.deployment {
                 self.set_deployment(&device.device.device_id, &deployment)
@@ -909,6 +910,13 @@ impl<'a> DeviceConfigManager<'a> {
         }
     }
 
+    pub async fn validate_config(&self) -> Result<()> {
+        let config = fs::read(&self.config.configuration.template_config_path).await?;
+        let _config: iotedge_config::Config = toml::from_slice(&config)?;
+
+        Ok(())
+    }
+
     pub async fn make_all_device_configs(&self, devices: &[CreatedDevice<'_>]) -> Result<()> {
         self.file_manager
             .print(&format!(
@@ -919,14 +927,14 @@ impl<'a> DeviceConfigManager<'a> {
             .await?;
 
         let base_config = fs::read(&self.config.configuration.template_config_path).await?;
-        let base_config = String::from_utf8(base_config)?;
+        let mut base_config: iotedge_config::Config = toml::from_slice(&base_config)?;
 
         self.file_manager
             .print_verbose(format!("Base Config File: {:#?}", base_config))
             .await?;
 
         for device in devices {
-            self.make_device_config(&device, &base_config).await?;
+            self.make_device_config(&device, &mut base_config).await?;
         }
 
         self.file_manager
@@ -939,98 +947,95 @@ impl<'a> DeviceConfigManager<'a> {
     async fn make_device_config(
         &self,
         device: &CreatedDevice<'_>,
-        base_config: &str,
+        config: &mut iotedge_config::Config,
     ) -> Result<()> {
         self.file_manager
             .print_verbose(format!("Generating config for {}", device.device.device_id))
             .await?;
 
         let authentication = match self.config.iothub.authentication_method {
-            config::IoTHubAuthMethod::SymmetricKey => aziot_config::ManualAuthMethod::SharedPrivateKey {
-                device_id_pk: aziot_config::DeviceIdPk {
-                    value: device
-                        .create_response
-                        .authentication
-                        .symmetric_key
-                        .primary_key
-                        .clone()
-                        .ok_or_else(|| {
-                            anyhow::Error::msg("Hub response did not contain symmetric key")
-                        })?,
-                },
-            },
+            config::IoTHubAuthMethod::SymmetricKey => {
+                aziot_config::ManualAuthMethod::SharedPrivateKey {
+                    device_id_pk: aziot_config::SymmetricKey::Inline {
+                        value: device
+                            .create_response
+                            .authentication
+                            .symmetric_key
+                            .primary_key
+                            .clone()
+                            .ok_or_else(|| {
+                                anyhow::Error::msg("Hub response did not contain symmetric key")
+                            })?
+                            .into_bytes(),
+                    },
+                }
+            }
             config::IoTHubAuthMethod::X509Cert => aziot_config::ManualAuthMethod::X509 {
-                identity: aziot_config::X509Identity {
-                    identity_cert: format!(
+                identity: aziot_config::X509Identity::Preloaded {
+                    identity_cert: Url::parse(&format!(
                         "file:///etc/aziot/certificates/{}.hub-auth.cert.pem",
                         device.device.device_id
-                    ),
-                    identity_pk: format!(
-                        "file:///etc/aziot/certificates/{}.hub-auth.key.pem",
-                        device.device.device_id
-                    ),
+                    ))?,
+                    identity_pk: aziot_keys_common::PreloadedKeyLocation::Filesystem {
+                        path: format!(
+                            "file:///etc/aziot/certificates/{}.hub-auth.key.pem",
+                            device.device.device_id
+                        )
+                        .into(),
+                    },
                 },
             },
         };
 
-        let provisioning = aziot_config::Provisioning {
-            source: "manual".to_owned(),
-            device_id: device.device.device_id.clone(),
-            iothub_hostname: self.config.iothub.iothub_hostname.clone(),
-            authentication,
+        config.aziot.provisioning = aziot_config::Provisioning {
+            provisioning: aziot_config::ProvisioningType::Manual {
+                inner: aziot_config::ManualProvisioning::Explicit {
+                    device_id: device.device.device_id.clone(),
+                    iothub_hostname: self.config.iothub.iothub_hostname.clone(),
+                    authentication,
+                },
+            },
         };
 
-        let hostname = device
-            .device
-            .hostname
-            .as_deref()
-            .unwrap_or("{{HOSTNAME}}")
-            .to_owned();
+        config.aziot.hostname = Some(
+            device
+                .device
+                .hostname
+                .as_deref()
+                .unwrap_or("{{HOSTNAME}}")
+                .to_owned(),
+        );
 
-        let parent_hostname = device.parent.map(|p| {
+        config.aziot.parent_hostname = device.parent.map(|p| {
             p.hostname
                 .as_deref()
                 .unwrap_or("{{PARENT_HOSTNAME}}")
                 .to_owned()
         });
 
-        let trust_bundle_cert =
-            "file:///etc/aziot/certificates/iotedge_config_cli_root.pem".to_owned();
+        config.trust_bundle_cert = Some(Url::parse(
+            "file:///etc/aziot/certificates/iotedge_config_cli_root.pem",
+        )?);
 
-        let edge_ca = aziot_config::EdgeCa {
-            cert: format!(
+        config.edge_ca = Some(iotedge_config::EdgeCa::Explicit {
+            cert: Url::parse(&format!(
                 "file:///etc/aziot/certificates/{}.full-chain.cert.pem",
                 device.device.device_id
-            ),
-            pk: format!(
+            ))?,
+            pk: Url::parse(&format!(
                 "file:///etc/aziot/certificates/{}.key.pem",
                 device.device.device_id
-            ),
-        };
+            ))?,
+        });
 
-        let image = device
+        config.agent.config.image = device
             .device
             .edge_agent
             .as_ref()
-            .unwrap_or(&self.config.configuration.default_edge_agent);
-        let agent = aziot_config::Agent {
-            config: aziot_config::AgentConfig {
-                image: image.to_owned(),
-            },
-        };
-
-        let config = aziot_config::AziotConfig {
-            provisioning,
-            hostname,
-            parent_hostname,
-            trust_bundle_cert,
-            edge_ca,
-            agent,
-        };
+            .unwrap_or(&self.config.configuration.default_edge_agent)
+            .to_owned();
 
         let config = toml::to_string(&config)?;
-        let config = &[&config, base_config].join("\n\n");
-
         let file = self
             .file_manager
             .get_folder(&device.device.device_id)
@@ -1338,5 +1343,111 @@ fn run_command(args: &[&str]) -> Command {
         let mut command = Command::new("powershell.exe");
         command.args(args);
         command
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_cert_creation() {
+        let config = config::Config::read_config("src/test_files/cert_test.yaml")
+            .await
+            .unwrap();
+        let dir = tempdir().unwrap();
+        let file_manager = FileManager::new(dir.path(), true)
+            .await
+            .expect("Could not make file manager");
+
+        let cert_manager = CertManager::new(&config, &file_manager, None);
+
+        cert_manager
+            .make_all_device_ca_certs()
+            .await
+            .expect("Could not make all certs");
+
+        let make_auth_certs = FlatenedDevice::flatten_devices(&config.root_device)
+            .into_iter()
+            .map(|device| cert_manager.make_hub_auth_cert(&device.device.device_id));
+        futures::future::join_all(make_auth_certs)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<PathBuf>>>()
+            .expect("Could not make all hub auth certs");
+
+        let validate_certs = FlatenedDevice::flatten_devices(&config.root_device)
+            .into_iter()
+            .map(|device| {
+                validate_created_certs(&file_manager, &cert_manager, &device.device.device_id)
+            });
+        futures::future::join_all(validate_certs).await;
+    }
+
+    async fn validate_created_certs(
+        file_manager: &FileManager,
+        cert_manager: &CertManager<'_>,
+        device_id: &str,
+    ) {
+        println!("Validating {}'s certs", device_id);
+        let dir = file_manager.get_folder(device_id).await.unwrap();
+
+        assert!(dir.join(format!("{}.cert.pem", device_id)).exists());
+        assert!(dir.join(format!("{}.key.pem", device_id)).exists());
+
+        let chain = dir.join(format!("{}.full-chain.cert.pem", device_id));
+        assert!(chain.exists());
+
+        let root = dir.join("iotedge_config_cli_root.pem");
+        assert!(root.exists());
+
+        let verify = cert_manager
+            .openssl_command()
+            .arg("verify")
+            .args(&[OsStr::new("-CAfile"), root.as_os_str()])
+            .arg(chain.as_os_str())
+            .spawn()
+            .expect("Could not shell out to openssl")
+            .wait()
+            .await
+            .expect("Could not shell out to openssl");
+        assert!(verify.success());
+    }
+
+    #[tokio::test]
+    async fn test_configs() {
+        let configs = WalkDir::new("templates").into_iter().filter_map(|path| {
+            let path = path.as_ref().unwrap().path();
+            if path.extension() == Some(OsStr::new("yaml")) {
+                Some(path.to_path_buf())
+            } else {
+                None
+            }
+        });
+
+        futures::future::join_all(configs.map(test_config)).await;
+    }
+
+    async fn test_config(file: PathBuf) {
+        let config = config::Config::read_config(&file)
+            .await
+            .unwrap_or_else(|_| panic!("Could not parse {:?}", &file));
+
+        let device_config = fs::read(&config.configuration.template_config_path)
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Could not read {}",
+                    config.configuration.template_config_path
+                )
+            });
+        let _device_config: iotedge_config::Config = toml::from_slice(&device_config)
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Could not parse {}",
+                    config.configuration.template_config_path
+                )
+            });
     }
 }

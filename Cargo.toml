@@ -1,8 +1,8 @@
 [package]
-name = "iotedge_config_cli"
-version = "0.1.0"
 authors = ["Lee Fitchett <lefitche@microsoft.com>"]
 edition = "2018"
+name = "iotedge_config_cli"
+version = "0.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,19 +11,27 @@ anyhow = "1.0.34"
 
 chrono = "0.4.19"
 
-tokio =  { version = "1.2.0", features = ["macros", "rt-multi-thread", "process", "io-util", "fs", "sync"] }
 futures = "0.3.13"
+tokio = {version = "1.2.0", features = ["macros", "rt-multi-thread", "process", "io-util", "fs", "sync"]}
 
-structopt = { version = "0.3", default-features = false }
+structopt = {version = "0.3", default-features = false}
 
-toml = "0.5"
-serde = { version = "1", features = ["derive"] }
+serde = {version = "1", features = ["derive"]}
 serde_json = "1.0.59"
 serde_yaml = "0.8"
+toml = "0.5"
 
 id_tree = "1.7.0"
 id_tree_layout = "2.0.1"
 
-zip = "0.5"
 walkdir = "2"
+zip = "0.5"
 
+# iotedge = { git = "https://github.com/Azure/iotedge.git", branch = "master" }
+aziot-keys-common = {git = "https://github.com/Azure/iot-identity-service", branch = "main"}
+aziotctl-common = {git = "https://github.com/Azure/iot-identity-service", branch = "main"}
+iotedge = {git = "https://github.com/lfitchett/iotedge.git", branch = "public_config"}
+url = "2"
+
+[dev-dependencies]
+tempfile = "3.1.0"
