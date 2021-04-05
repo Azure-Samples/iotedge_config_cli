@@ -38,7 +38,8 @@ async fn main() -> Result<()> {
 
     config.check_device_ids().await?;
     config.check_hostnames(&file_manager).await?;
-
+    device_config_manager.validate_config().await?;
+    
     visualize_terminal(&config.root_device, &file_manager).await?;
     if args.visualize {
         return Ok(());
@@ -907,6 +908,13 @@ impl<'a> DeviceConfigManager<'a> {
             config,
             file_manager,
         }
+    }
+
+    pub async fn validate_config(&self) -> Result<()> {
+        let config = fs::read(&self.config.configuration.template_config_path).await?;
+        let _config: iotedge_config::Config = toml::from_slice(&config)?;
+
+        Ok(())
     }
 
     pub async fn make_all_device_configs(&self, devices: &[CreatedDevice<'_>]) -> Result<()> {
