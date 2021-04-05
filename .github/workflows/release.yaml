@@ -16,7 +16,7 @@ jobs:
       - name: Build
         run: cargo build --verbose --release
       - name: Run tests
-        run: cargo test --verbose --release
+        run: cargo test --verbose --release -- --nocapture
       - name: Make Release Bundle
         run: chmod +x .github/workflows/bundle.sh && .github/workflows/bundle.sh
       - uses: "marvinpinto/action-automatic-releases@latest"

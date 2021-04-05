@@ -1350,6 +1350,71 @@ fn run_command(args: &[&str]) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_cert_creation() {
+        let config = config::Config::read_config("src/test_files/cert_test.yaml")
+            .await
+            .unwrap();
+        let dir = tempdir().unwrap();
+        let file_manager = FileManager::new(dir.path(), true)
+            .await
+            .expect("Could not make file manager");
+
+        let cert_manager = CertManager::new(&config, &file_manager, None);
+
+        cert_manager
+            .make_all_device_ca_certs()
+            .await
+            .expect("Could not make all certs");
+
+        let make_auth_certs = FlatenedDevice::flatten_devices(&config.root_device)
+            .into_iter()
+            .map(|device| cert_manager.make_hub_auth_cert(&device.device.device_id));
+        futures::future::join_all(make_auth_certs)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<PathBuf>>>()
+            .expect("Could not make all hub auth certs");
+
+        let validate_certs = FlatenedDevice::flatten_devices(&config.root_device)
+            .into_iter()
+            .map(|device| {
+                validate_created_certs(&file_manager, &cert_manager, &device.device.device_id)
+            });
+        futures::future::join_all(validate_certs).await;
+    }
+
+    async fn validate_created_certs(
+        file_manager: &FileManager,
+        cert_manager: &CertManager<'_>,
+        device_id: &str,
+    ) {
+        println!("Validating {}'s certs", device_id);
+        let dir = file_manager.get_folder(device_id).await.unwrap();
+
+        assert!(dir.join(format!("{}.cert.pem", device_id)).exists());
+        assert!(dir.join(format!("{}.key.pem", device_id)).exists());
+
+        let chain = dir.join(format!("{}.full-chain.cert.pem", device_id));
+        assert!(chain.exists());
+
+        let root = dir.join("iotedge_config_cli_root.pem");
+        assert!(root.exists());
+
+        let verify = cert_manager
+            .openssl_command()
+            .arg("verify")
+            .args(&[OsStr::new("-CAfile"), root.as_os_str()])
+            .arg(chain.as_os_str())
+            .spawn()
+            .expect("Could not shell out to openssl")
+            .wait()
+            .await
+            .expect("Could not shell out to openssl");
+        assert!(verify.success());
+    }
 
     #[tokio::test]
     async fn test_configs() {
