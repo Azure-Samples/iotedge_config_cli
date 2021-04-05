@@ -27,7 +27,9 @@ id_tree_layout = "2.0.1"
 zip = "0.5"
 walkdir = "2"
 
-iotedge = { git = "https://github.com/lfitchett/iotedge.git", branch = "public_config" }
 # iotedge = { git = "https://github.com/Azure/iotedge.git", branch = "master" }
+iotedge = { git = "https://github.com/lfitchett/iotedge.git", branch = "public_config" }
+aziotctl-common = { git = "https://github.com/Azure/iot-identity-service", branch = "main" }
+aziot-keys-common = { git = "https://github.com/Azure/iot-identity-service", branch = "main" }
 
-
+url = "2"

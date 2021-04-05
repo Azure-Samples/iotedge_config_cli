@@ -10,10 +10,11 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use url::Url;
 
-use iotedge::config::super_config::Config as ISConfig;
+use aziotctl_common::config::super_config as aziot_config;
+use iotedge::config::super_config as iotedge_config;
 
-mod aziot_config;
 mod config;
 mod hub_responses;
 
@@ -28,7 +29,7 @@ async fn main() -> Result<()> {
         let _ = fs::remove_dir_all(&args.output).await;
     }
 
-    let test: ISConfig = toml::from_str("")?;
+    let test: iotedge_config::Config = toml::from_str("")?;
     println!("{:#?}", test);
 
     let config = config::Config::read_config(&args.config).await?;
@@ -925,7 +926,7 @@ impl<'a> DeviceConfigManager<'a> {
             .await?;
 
         let base_config = fs::read(&self.config.configuration.template_config_path).await?;
-        let mut base_config: ISConfig = toml::from_slice(&base_config)?;
+        let mut base_config: iotedge_config::Config = toml::from_slice(&base_config)?;
 
         self.file_manager
             .print_verbose(format!("Base Config File: {:#?}", base_config))
@@ -945,7 +946,7 @@ impl<'a> DeviceConfigManager<'a> {
     async fn make_device_config(
         &self,
         device: &CreatedDevice<'_>,
-        config: &mut ISConfig,
+        config: &mut iotedge_config::Config,
     ) -> Result<()> {
         self.file_manager
             .print_verbose(format!("Generating config for {}", device.device.device_id))
@@ -954,7 +955,7 @@ impl<'a> DeviceConfigManager<'a> {
         let authentication = match self.config.iothub.authentication_method {
             config::IoTHubAuthMethod::SymmetricKey => {
                 aziot_config::ManualAuthMethod::SharedPrivateKey {
-                    device_id_pk: aziot_config::DeviceIdPk {
+                    device_id_pk: aziot_config::SymmetricKey::Inline {
                         value: device
                             .create_response
                             .authentication
@@ -963,71 +964,75 @@ impl<'a> DeviceConfigManager<'a> {
                             .clone()
                             .ok_or_else(|| {
                                 anyhow::Error::msg("Hub response did not contain symmetric key")
-                            })?,
+                            })?
+                            .into_bytes(),
                     },
                 }
             }
             config::IoTHubAuthMethod::X509Cert => aziot_config::ManualAuthMethod::X509 {
-                identity: aziot_config::X509Identity {
-                    identity_cert: format!(
+                identity: aziot_config::X509Identity::Preloaded {
+                    identity_cert: Url::parse(&format!(
                         "file:///etc/aziot/certificates/{}.hub-auth.cert.pem",
                         device.device.device_id
-                    ),
-                    identity_pk: format!(
-                        "file:///etc/aziot/certificates/{}.hub-auth.key.pem",
-                        device.device.device_id
-                    ),
+                    ))?,
+                    identity_pk: aziot_keys_common::PreloadedKeyLocation::Filesystem {
+                        path: format!(
+                            "file:///etc/aziot/certificates/{}.hub-auth.key.pem",
+                            device.device.device_id
+                        )
+                        .into(),
+                    },
                 },
             },
         };
 
-        let provisioning = aziot_config::Provisioning {
-            source: "manual".to_owned(),
-            device_id: device.device.device_id.clone(),
-            iothub_hostname: self.config.iothub.iothub_hostname.clone(),
-            authentication,
+        config.aziot.provisioning = aziot_config::Provisioning {
+            provisioning: aziot_config::ProvisioningType::Manual {
+                inner: aziot_config::ManualProvisioning::Explicit {
+                    device_id: device.device.device_id.clone(),
+                    iothub_hostname: self.config.iothub.iothub_hostname.clone(),
+                    authentication,
+                },
+            },
         };
 
-        let hostname = device
-            .device
-            .hostname
-            .as_deref()
-            .unwrap_or("{{HOSTNAME}}")
-            .to_owned();
+        config.aziot.hostname = Some(
+            device
+                .device
+                .hostname
+                .as_deref()
+                .unwrap_or("{{HOSTNAME}}")
+                .to_owned(),
+        );
 
-        let parent_hostname = device.parent.map(|p| {
+        config.aziot.parent_hostname = device.parent.map(|p| {
             p.hostname
                 .as_deref()
                 .unwrap_or("{{PARENT_HOSTNAME}}")
                 .to_owned()
         });
 
-        let trust_bundle_cert =
-            "file:///etc/aziot/certificates/iotedge_config_cli_root.pem".to_owned();
+        config.trust_bundle_cert = Some(Url::parse(
+            "file:///etc/aziot/certificates/iotedge_config_cli_root.pem",
+        )?);
 
-        let edge_ca = aziot_config::EdgeCa {
-            cert: format!(
+        config.edge_ca = Some(iotedge_config::EdgeCa::Explicit {
+            cert: Url::parse(&format!(
                 "file:///etc/aziot/certificates/{}.full-chain.cert.pem",
                 device.device.device_id
-            ),
-            pk: format!(
+            ))?,
+            pk: Url::parse(&format!(
                 "file:///etc/aziot/certificates/{}.key.pem",
                 device.device.device_id
-            ),
-        };
+            ))?,
+        });
 
-        let image = device
+        config.agent.config.image = device
             .device
             .edge_agent
             .as_ref()
-            .unwrap_or(&self.config.configuration.default_edge_agent);
-        let agent = aziot_config::Agent {
-            config: aziot_config::AgentConfig {
-                image: image.to_owned(),
-            },
-        };
-
-        // config.
+            .unwrap_or(&self.config.configuration.default_edge_agent)
+            .to_owned();
 
         // let config = aziot_config::AziotConfig {
         //     provisioning,
