@@ -1,0 +1,18 @@
+config_version: "1.0"
+
+iothub:
+  iothub_hostname: IOTHUB_HOSTNAME
+  iothub_name: IOTHUB_NAME
+  authentication_method: x509_certificate
+
+configuration:
+  template_config_path: ""
+  default_edge_agent: ""
+
+edgedevices:
+  device_id: A
+  child:
+    - device_id: AA
+      child:
+        - device_id: AAA
+    - device_id: AB
