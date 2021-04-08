@@ -27,14 +27,6 @@
               "settings": {
                 "image": "$upstream:443/azureiotedge-hub:1.2",
                 "createOptions": "{\"HostConfig\": {\"PortBindings\": {\"5671\/tcp\": [{\"HostPort\": \"5671\"}],\"8883\/tcp\": [{\"HostPort\": \"8883\"}]}}}"
-              },	
-              "env": {	
-                "experimentalFeatures:enabled": {	
-                  "value": true
-                },
-                "experimentalFeatures:nestedEdgeEnabled": {	
-                  "value": true
-                }
               }
             }
           },
