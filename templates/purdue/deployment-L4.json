@@ -37,7 +37,7 @@
               "status": "running",
               "restartPolicy": "always",
               "settings": {
-                "image": "$upstream:443/azureiotedge-api-proxy:latest",
+                "image": "$upstream:443/azureiotedge-api-proxy:1.0",
                 "createOptions": "{\"HostConfig\": {\"PortBindings\": {\"443\/tcp\": [{\"HostPort\": \"443\"}]}}}"
               },
               "env": {

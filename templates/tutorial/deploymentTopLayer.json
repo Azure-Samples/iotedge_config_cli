@@ -20,7 +20,7 @@
                     },
                     "IoTEdgeAPIProxy": {
                         "settings": {
-                            "image": "mcr.microsoft.com/azureiotedge-api-proxy",
+                            "image": "mcr.microsoft.com/azureiotedge-api-proxy:1.0",
                             "createOptions": "{\"HostConfig\": {\"PortBindings\": {\"8000/tcp\": [{\"HostPort\":\"8000\"}]}}}"
                         },
                         "type": "docker",
