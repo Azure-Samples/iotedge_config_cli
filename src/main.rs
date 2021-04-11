@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
     config.check_device_ids().await?;
     config.check_hostnames(&file_manager).await?;
     device_config_manager.validate_config().await?;
-    
+
     visualize_terminal(&config.root_device, &file_manager).await?;
     if args.visualize {
         return Ok(());
@@ -270,6 +270,8 @@ impl<'a> IoTHubDeviceManager<'a> {
             cert_manager,
         }
     }
+
+    // Consider running "az extension update --name azure-iot"
 
     pub async fn create_devices(&self) -> Result<Vec<CreatedDevice<'_>>> {
         // Create devices
@@ -977,8 +979,9 @@ impl<'a> DeviceConfigManager<'a> {
                         device.device.device_id
                     ))?,
                     identity_pk: aziot_keys_common::PreloadedKeyLocation::Filesystem {
+                        // Leave off the file://, it is automatically added by the serializer
                         path: format!(
-                            "file:///etc/aziot/certificates/{}.hub-auth.key.pem",
+                            "/etc/aziot/certificates/{}.hub-auth.key.pem",
                             device.device.device_id
                         )
                         .into(),
@@ -1432,22 +1435,35 @@ mod tests {
     async fn test_config(file: PathBuf) {
         let config = config::Config::read_config(&file)
             .await
-            .unwrap_or_else(|_| panic!("Could not parse {:?}", &file));
+            .expect(&format!("Could not parse {:?}", &file));
 
         let device_config = fs::read(&config.configuration.template_config_path)
             .await
-            .unwrap_or_else(|_| {
-                panic!(
-                    "Could not read {}",
-                    config.configuration.template_config_path
-                )
-            });
-        let _device_config: iotedge_config::Config = toml::from_slice(&device_config)
-            .unwrap_or_else(|_| {
-                panic!(
-                    "Could not parse {}",
-                    config.configuration.template_config_path
-                )
-            });
+            .expect(&format!(
+                "Could not read {}",
+                config.configuration.template_config_path
+            ));
+        let _device_config: iotedge_config::Config =
+            toml::from_slice(&device_config).expect(&format!(
+                "Could not parse {}",
+                config.configuration.template_config_path
+            ));
+    }
+
+    #[tokio::test]
+    async fn test_iotedge_config() {
+        let files = &["src/test_files/cert_config.toml", "src/test_files/symmetric_key_config.toml"];
+
+        for file in files {
+            let device_config = fs::read(file)
+                .await
+                .expect(&format!("Could not read {}", file));
+
+            let device_config: iotedge_config::Config =
+                toml::from_slice(&device_config).expect(&format!("Could not parse {}", file));
+
+            let _device_config =
+                toml::to_string(&device_config).expect(&format!("Could not re-serialize {}", file));
+        }
     }
 }
