@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use base64;
 use chrono::Local;
 use structopt::StructOpt;
 use tokio::fs;
@@ -959,16 +960,17 @@ impl<'a> DeviceConfigManager<'a> {
             config::IoTHubAuthMethod::SymmetricKey => {
                 aziot_config::ManualAuthMethod::SharedPrivateKey {
                     device_id_pk: aziot_config::SymmetricKey::Inline {
-                        value: device
-                            .create_response
-                            .authentication
-                            .symmetric_key
-                            .primary_key
-                            .clone()
-                            .ok_or_else(|| {
-                                anyhow::Error::msg("Hub response did not contain symmetric key")
-                            })?
-                            .into_bytes(),
+                        value: base64::decode(
+                            device
+                                .create_response
+                                .authentication
+                                .symmetric_key
+                                .primary_key
+                                .clone()
+                                .ok_or_else(|| {
+                                    anyhow::Error::msg("Hub response did not contain symmetric key")
+                                })?,
+                        )?,
                     },
                 }
             }
@@ -1452,7 +1454,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_iotedge_config() {
-        let files = &["src/test_files/cert_config.toml", "src/test_files/symmetric_key_config.toml"];
+        let files = &[
+            "src/test_files/cert_config.toml",
+            "src/test_files/symmetric_key_config.toml",
+        ];
 
         for file in files {
             let device_config = fs::read(file)
