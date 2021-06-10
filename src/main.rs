@@ -4,7 +4,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use base64;
 use chrono::Local;
 use structopt::StructOpt;
 use tokio::fs;
@@ -1039,6 +1038,15 @@ impl<'a> DeviceConfigManager<'a> {
             .as_ref()
             .unwrap_or(&self.config.configuration.default_edge_agent)
             .to_owned();
+
+        config.agent.config.auth = device.device.container_auth.as_ref().and_then(|auth| {
+            serde_json::from_value(serde_json::json! {{
+                "serveraddress": auth.serveraddress,
+                "username": auth.username,
+                "password": auth.password,
+            }})
+            .unwrap()
+        });
 
         let config = toml::to_string(&config)?;
         let file = self
