@@ -16,7 +16,7 @@ pub struct Config {
 pub struct IoTHub {
     pub iothub_hostname: String,
     pub iothub_name: String,
-    pub authentication_method: IoTHubAuthMethod, //TODO: Make Enum
+    pub authentication_method: IoTHubAuthMethod,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq)]
@@ -45,6 +45,14 @@ pub struct DeviceConfig {
     pub deployment: Option<String>,
     pub hostname: Option<String>,
     pub edge_agent: Option<String>,
+    pub container_auth: Option<ContainerAuth>,
     #[serde(default, rename = "child")]
     pub children: Vec<DeviceConfig>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct ContainerAuth {
+    pub serveraddress: String,
+    pub username: String,
+    pub password: String,
 }
