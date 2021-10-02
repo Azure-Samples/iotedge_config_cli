@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
     let file_manager = FileManager::new(&args.output, args.verbose).await?;
     let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
     let hub_manager = IoTHubDeviceManager::new(&config, &file_manager, &cert_manager);
-    let device_config_manager = DeviceConfigManager::new(&config, &file_manager);
+    let device_config_manager = EdgeDeviceConfigManager::new(&config, &file_manager);
     let script_manager = ScriptManager::new(&config, &file_manager);
 
     file_manager
@@ -224,18 +224,21 @@ impl config::Config {
 }
 
 struct FlatenedDevice<'a> {
-    device: &'a config::DeviceConfig,
-    parent: Option<&'a config::DeviceConfig>,
+    device: &'a config::EdgeDeviceConfig,
+    parent: Option<&'a config::EdgeDeviceConfig>,
 }
 
 impl<'a> FlatenedDevice<'a> {
-    pub fn flatten_devices(root: &'a config::DeviceConfig) -> Vec<Self> {
-        Self::flatten_devices_internal(root, None)
+    pub fn flatten_devices(roots: &'a Vec<config::EdgeDeviceConfig>) -> Vec<Self> {
+        roots
+            .into_iter()
+            .flat_map(|root| Self::flatten_devices_internal(root, None))
+            .collect()
     }
 
     fn flatten_devices_internal(
-        device: &'a config::DeviceConfig,
-        parent: Option<&'a config::DeviceConfig>,
+        device: &'a config::EdgeDeviceConfig,
+        parent: Option<&'a config::EdgeDeviceConfig>,
     ) -> Vec<Self> {
         let mut result: Vec<FlatenedDevice> = vec![FlatenedDevice { device, parent }];
         for child in &device.children {
@@ -247,8 +250,8 @@ impl<'a> FlatenedDevice<'a> {
 }
 
 struct CreatedDevice<'a> {
-    device: &'a config::DeviceConfig,
-    parent: Option<&'a config::DeviceConfig>,
+    device: &'a config::EdgeDeviceConfig,
+    parent: Option<&'a config::EdgeDeviceConfig>,
     create_response: hub_responses::CreateResponse,
 }
 
@@ -899,12 +902,12 @@ impl<'a> CertManager<'a> {
     }
 }
 
-struct DeviceConfigManager<'a> {
+struct EdgeDeviceConfigManager<'a> {
     config: &'a config::Config,
     file_manager: &'a FileManager,
 }
 
-impl<'a> DeviceConfigManager<'a> {
+impl<'a> EdgeDeviceConfigManager<'a> {
     pub fn new(config: &'a config::Config, file_manager: &'a FileManager) -> Self {
         Self {
             config,
@@ -1316,20 +1319,29 @@ impl<'a> ScriptManager<'a> {
     }
 }
 
-async fn visualize_terminal(root: &config::DeviceConfig, file_manager: &FileManager) -> Result<()> {
-    let result = make_tree(root, "")?;
+async fn visualize_terminal(
+    roots: &Vec<config::EdgeDeviceConfig>,
+    file_manager: &FileManager,
+) -> Result<()> {
+    let result = roots
+        .into_iter()
+        .map(|root| make_tree(root, ""))
+        .collect::<Result<Vec<String>>>()?
+        .join("\n\n");
     file_manager.print(&result).await?;
     fs::write(file_manager.base_path().join("visualization.txt"), result).await?;
 
     Ok(())
 }
 
-fn make_tree(device: &config::DeviceConfig, prefix: &str) -> Result<String> {
+fn make_tree(device: &config::EdgeDeviceConfig, prefix: &str) -> Result<String> {
     let mut result: Vec<String> = vec![device.device_id.clone(), "\n".to_owned()];
 
-    let num_children = device.children.len();
-    for (i, child) in device.children.iter().enumerate() {
-        let is_last = i + 1 == num_children;
+    let mut num_children = device.children.len() + device.leafs.len();
+    for child in &device.children {
+        num_children -= 1;
+        let is_last = num_children == 0;
+
         let node_prefix = if is_last { "└──" } else { "├──" };
         let node_prefix = [prefix, node_prefix].concat();
         result.push(node_prefix);
@@ -1337,6 +1349,15 @@ fn make_tree(device: &config::DeviceConfig, prefix: &str) -> Result<String> {
         let child_prefix = if is_last { "    " } else { "│   " };
         let child_prefix = [prefix, child_prefix].concat();
         result.push(make_tree(&child, &child_prefix)?);
+    }
+
+    for leaf in &device.leafs {
+        num_children -= 1;
+        let is_last = num_children == 0;
+
+        let node_prefix = if is_last { "└──" } else { "├──" };
+        let leaf = [prefix, node_prefix, &leaf.device_id, "\n"].concat();
+        result.push(leaf);
     }
 
     Ok(result.concat())

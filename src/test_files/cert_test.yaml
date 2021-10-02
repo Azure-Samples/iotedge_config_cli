@@ -10,9 +10,9 @@ configuration:
   default_edge_agent: ""
 
 edgedevices:
-  device_id: A
-  child:
-    - device_id: AA
-      child:
-        - device_id: AAA
-    - device_id: AB
+  - device_id: A
+    child:
+      - device_id: AA
+        child:
+          - device_id: AAA
+      - device_id: AB
