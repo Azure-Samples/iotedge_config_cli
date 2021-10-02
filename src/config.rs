@@ -49,7 +49,7 @@ pub struct EdgeDeviceConfig {
     #[serde(default, rename = "child")]
     pub children: Vec<EdgeDeviceConfig>,
     #[serde(default, rename = "leaf")]
-    pub leafs: Vec<LeafDeviceConfig>,
+    pub leaves: Vec<LeafDeviceConfig>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]

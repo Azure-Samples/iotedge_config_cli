@@ -31,11 +31,14 @@ edgedevices:
             # twin: "path/to/twin.json" Optional. Set leaf device's desired twin
           - device_id: leaf-2
             # twin: "path/to/twin.json" Optional. Set leaf device's desired twin
+    leaf:
+      - device_id: leaf-3
+        # twin: "path/to/twin.json" Optional. Set leaf device's desired twin
   - device_id: edge-2
     deployment: "./templates/tutorial/deploymentLowerLayer.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
     # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value nor the parent_hostname value
     leaf: 
-      - device_id: leaf-3
-        # twin: "path/to/twin.json" Optional. Set leaf device's desired twin
       - device_id: leaf-4
+        # twin: "path/to/twin.json" Optional. Set leaf device's desired twin
+      - device_id: leaf-5
         # twin: "path/to/twin.json" Optional. Set leaf device's desired twin
