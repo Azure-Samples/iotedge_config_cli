@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
             .await?;
         for device in created_devices {
             file_manager
-                .zip_dir(file_manager.get_folder(device.device.device_id()).await?)
+                .zip_dir(file_manager.get_folder(device.config.device_id()).await?)
                 .await?
         }
 
@@ -192,10 +192,10 @@ impl config::Config {
         let mut map = HashSet::new();
 
         for device in devices {
-            if !map.insert(device.device.device_id()) {
+            if !map.insert(device.config.device_id()) {
                 let error = format!(
                     r#"device id "{}" is used twice!"#,
-                    device.device.device_id()
+                    device.config.device_id()
                 );
 
                 return Err(anyhow::Error::msg(error));
@@ -210,7 +210,7 @@ impl config::Config {
         let mut map = HashMap::new();
 
         for device in devices {
-            if let DeviceConfig::Edge(device) = device.device {
+            if let DeviceConfig::Edge(device) = device.config {
                 if let Some(hostname) = &device.hostname {
                     if let Some(old) = map.insert(hostname, &device.device_id) {
                         file_manager
@@ -250,7 +250,7 @@ impl<'a> DeviceConfig<'a> {
 }
 
 struct FlatenedDevice<'a> {
-    device: DeviceConfig<'a>,
+    config: DeviceConfig<'a>,
     parent: Option<&'a config::EdgeDeviceConfig>,
 }
 
@@ -267,7 +267,7 @@ impl<'a> FlatenedDevice<'a> {
         parent: Option<&'a config::EdgeDeviceConfig>,
     ) -> Vec<Self> {
         let mut result: Vec<FlatenedDevice> = vec![FlatenedDevice {
-            device: DeviceConfig::Edge(device),
+            config: DeviceConfig::Edge(device),
             parent,
         }];
         for child in &device.children {
@@ -276,7 +276,7 @@ impl<'a> FlatenedDevice<'a> {
 
         for leaf in &device.leaves {
             result.push(FlatenedDevice {
-                device: DeviceConfig::Leaf(leaf),
+                config: DeviceConfig::Leaf(leaf),
                 parent: Some(device),
             })
         }
@@ -286,7 +286,7 @@ impl<'a> FlatenedDevice<'a> {
 }
 
 struct CreatedDevice<'a> {
-    device: DeviceConfig<'a>,
+    config: DeviceConfig<'a>,
     parent: Option<&'a config::EdgeDeviceConfig>,
     create_response: hub_responses::CreateResponse,
 }
@@ -336,7 +336,7 @@ impl<'a> IoTHubDeviceManager<'a> {
         let relationships_to_add = created_devices.iter().filter_map(|child| {
             child
                 .parent
-                .map(|parent| (&parent.device_id, child.device.device_id()))
+                .map(|parent| (&parent.device_id, child.config.device_id()))
         });
         self.file_manager
             .print_verbose("Adding parent-child relationships.")
@@ -368,7 +368,7 @@ impl<'a> IoTHubDeviceManager<'a> {
 
         let futures = devices_to_delete
             .iter()
-            .map(|d| self.delete_device_identity(d.device.device_id()));
+            .map(|d| self.delete_device_identity(d.config.device_id()));
 
         let num_successes = futures::future::join_all(futures)
             .await
@@ -402,7 +402,7 @@ impl<'a> IoTHubDeviceManager<'a> {
         self.file_manager
             .print_verbose(format!(
                 "Creating device {} on hub {}",
-                device.device.device_id(),
+                device.config.device_id(),
                 self.config.iothub.iothub_name
             ))
             .await?;
@@ -410,12 +410,12 @@ impl<'a> IoTHubDeviceManager<'a> {
         let mut args = vec![
             "az iot hub device-identity create",
             "--device-id",
-            &device.device.device_id(),
+            &device.config.device_id(),
             "--hub-name",
             &self.config.iothub.iothub_name,
         ];
 
-        if let DeviceConfig::Edge(_) = device.device {
+        if let DeviceConfig::Edge(_) = device.config {
             args.push("--edge-enabled");
         }
 
@@ -424,7 +424,7 @@ impl<'a> IoTHubDeviceManager<'a> {
         if self.config.iothub.authentication_method == config::IoTHubAuthMethod::X509Cert {
             let auth_cert = self
                 .cert_manager
-                .make_hub_auth_cert(device.device.device_id())
+                .make_hub_auth_cert(device.config.device_id())
                 .await?;
 
             primary_thumbprint = self.cert_manager.get_thumbprint(&auth_cert).await?;
@@ -433,7 +433,7 @@ impl<'a> IoTHubDeviceManager<'a> {
                 .get_thumbprint(
                     &self
                         .cert_manager
-                        .device_ca_path(device.device.device_id())
+                        .device_ca_path(device.config.device_id())
                         .await?,
                 )
                 .await?;
@@ -448,7 +448,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             self.file_manager
                 .print_verbose(format!(
                     "Successfully created {}.\n{}",
-                    device.device.device_id(),
+                    device.config.device_id(),
                     String::from_utf8_lossy(&command.stdout)
                 ))
                 .await?;
@@ -456,19 +456,19 @@ impl<'a> IoTHubDeviceManager<'a> {
             let created_device: hub_responses::CreateResponse =
                 serde_json::from_slice(&command.stdout)?;
 
-            if let Some(deployment) = device.device.deployment() {
-                self.set_deployment(device.device.device_id(), &deployment)
+            if let Some(deployment) = device.config.deployment() {
+                self.set_deployment(device.config.device_id(), &deployment)
                     .await?;
             }
             Ok(CreatedDevice {
-                device: device.device.clone(),
+                config: device.config.clone(),
                 parent: device.parent,
                 create_response: created_device,
             })
         } else {
             let error = format!(
                 "Failed to create {}:\n{}\n{}\nMake sure you are running as sudo and try using the -f flag to delete existing devices before creation.",
-                device.device.device_id(),
+                device.config.device_id(),
                 String::from_utf8_lossy(&command.stdout),
                 String::from_utf8_lossy(&command.stderr)
             );
@@ -635,7 +635,7 @@ impl<'a> CertManager<'a> {
     pub async fn make_all_device_ca_certs(&self) -> Result<()> {
         let device_ids: Vec<&str> = FlatenedDevice::flatten_devices(&self.config.root_device)
             .iter()
-            .map(|d| d.device.device_id())
+            .map(|d| d.config.device_id())
             .collect();
 
         let config = self
@@ -994,7 +994,7 @@ impl<'a> EdgeDeviceConfigManager<'a> {
         device: &CreatedDevice<'_>,
         config: &mut iotedge_config::Config,
     ) -> Result<()> {
-        if let DeviceConfig::Edge(device_config) = device.device {
+        if let DeviceConfig::Edge(device_config) = device.config {
             self.file_manager
                 .print_verbose(format!("Generating config for {}", device_config.device_id))
                 .await?;
@@ -1303,7 +1303,7 @@ impl<'a> ScriptManager<'a> {
     }
 
     async fn add_install_scripts_internal(&self, device: &CreatedDevice<'_>) -> Result<()> {
-        if let DeviceConfig::Edge(device_config) = device.device {
+        if let DeviceConfig::Edge(device_config) = device.config {
             let hostname = device_config.hostname.as_deref();
             let parent_hostname = device.parent.and_then(|p| p.hostname.as_deref());
             self.file_manager
@@ -1353,11 +1353,11 @@ impl<'a> ScriptManager<'a> {
     async fn copy_device_readme(&self, device: &CreatedDevice<'_>) -> Result<()> {
         let file = self
             .file_manager
-            .get_folder(device.device.device_id())
+            .get_folder(device.config.device_id())
             .await?
             .join("README.md");
 
-        match device.device {
+        match device.config {
             DeviceConfig::Edge(_) => {
                 fs::write(file, include_str!(r#"docs/device_readme.md"#)).await?
             }
@@ -1453,7 +1453,7 @@ mod tests {
 
         let make_auth_certs = FlatenedDevice::flatten_devices(&config.root_device)
             .into_iter()
-            .map(|device| cert_manager.make_hub_auth_cert(device.device.device_id()));
+            .map(|device| cert_manager.make_hub_auth_cert(device.config.device_id()));
         futures::future::join_all(make_auth_certs)
             .await
             .into_iter()
@@ -1463,7 +1463,7 @@ mod tests {
         let validate_certs = FlatenedDevice::flatten_devices(&config.root_device)
             .into_iter()
             .map(|device| {
-                validate_created_certs(&file_manager, &cert_manager, device.device.device_id())
+                validate_created_certs(&file_manager, &cert_manager, device.config.device_id())
             });
         futures::future::join_all(validate_certs).await;
     }
