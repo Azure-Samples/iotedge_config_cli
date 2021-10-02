@@ -247,6 +247,13 @@ impl<'a> DeviceConfig<'a> {
             DeviceConfig::Leaf(d) => d.deployment.as_ref(),
         }
     }
+
+    fn device_type(&self) -> &str {
+        match self {
+            DeviceConfig::Edge(_) => "edge",
+            DeviceConfig::Leaf(_) => "leaf",
+        }
+    }
 }
 
 struct FlatenedDevice<'a> {
@@ -313,7 +320,6 @@ impl<'a> IoTHubDeviceManager<'a> {
     // Consider running "az extension update --name azure-iot"
 
     pub async fn create_devices(&self) -> Result<Vec<CreatedDevice<'_>>> {
-        // Create devices
         let devices_to_create = FlatenedDevice::flatten_devices(&self.config.root_device);
         self.file_manager
             .print(&format!(
@@ -323,6 +329,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             ))
             .await?;
 
+        // Create devices
         let futures = devices_to_create
             .iter()
             .map(|d| self.create_device_identity(d));
@@ -333,17 +340,13 @@ impl<'a> IoTHubDeviceManager<'a> {
             .collect::<Result<Vec<CreatedDevice<'_>>>>()?;
 
         // Add parent-child relationships
-        let relationships_to_add = created_devices.iter().filter_map(|child| {
-            child
-                .parent
-                .map(|parent| (&parent.device_id, child.config.device_id()))
-        });
         self.file_manager
             .print_verbose("Adding parent-child relationships.")
             .await?;
 
-        let futures = relationships_to_add
-            .map(|(parent, child)| self.create_parent_child_relationship(parent, child));
+        let futures = devices_to_create
+            .iter()
+            .map(|d| self.create_parent_child_relationship(d));
 
         futures::future::join_all(futures)
             .await
@@ -401,7 +404,8 @@ impl<'a> IoTHubDeviceManager<'a> {
     ) -> Result<CreatedDevice<'b>> {
         self.file_manager
             .print_verbose(format!(
-                "Creating device {} on hub {}",
+                "Creating {} device {} on hub {}",
+                device.config.device_type(),
                 device.config.device_id(),
                 self.config.iothub.iothub_name
             ))
@@ -456,10 +460,8 @@ impl<'a> IoTHubDeviceManager<'a> {
             let created_device: hub_responses::CreateResponse =
                 serde_json::from_slice(&command.stdout)?;
 
-            if let Some(deployment) = device.config.deployment() {
-                self.set_deployment(device.config.device_id(), &deployment)
-                    .await?;
-            }
+            self.set_deployment(&device.config).await?;
+
             Ok(CreatedDevice {
                 config: device.config.clone(),
                 parent: device.parent,
@@ -478,44 +480,52 @@ impl<'a> IoTHubDeviceManager<'a> {
         }
     }
 
-    async fn create_parent_child_relationship(&self, parent: &str, child: &str) -> Result<()> {
-        self.file_manager
-            .print_verbose(format!("Adding {} as child of parent {}.", child, parent,))
-            .await?;
-
-        let args = &[
-            "az iot hub device-identity parent set",
-            "--device-id",
-            child,
-            "--parent-device-id",
-            parent,
-            "--hub-name",
-            &self.config.iothub.iothub_name,
-        ];
-        let command = run_command(args).output().await?;
-        if command.status.success() {
+    async fn create_parent_child_relationship(&self, device: &FlatenedDevice<'_>) -> Result<()> {
+        if let Some(parent) = device.parent {
+            let parent = &parent.device_id;
+            let child = device.config.device_id();
             self.file_manager
                 .print_verbose(format!(
-                    "Successfully added {} as child of parent {}.\n{}",
+                    "Adding {} device {} as child of parent {}.",
+                    device.config.device_type(),
                     child,
                     parent,
-                    String::from_utf8_lossy(&command.stdout)
                 ))
                 .await?;
 
-            Ok(())
-        } else {
-            let error = format!(
-                "Failed to add {} as child of parent {}:\n{}\n{}\n",
+            let args = &[
+                "az iot hub device-identity parent set",
+                "--device-id",
                 child,
+                "--parent-device-id",
                 parent,
-                String::from_utf8_lossy(&command.stdout),
-                String::from_utf8_lossy(&command.stderr)
-            );
-            self.file_manager.print_verbose(&error).await?;
+                "--hub-name",
+                &self.config.iothub.iothub_name,
+            ];
+            let command = run_command(args).output().await?;
+            if command.status.success() {
+                self.file_manager
+                    .print_verbose(format!(
+                        "Successfully added {} as child of parent {}.\n{}",
+                        child,
+                        parent,
+                        String::from_utf8_lossy(&command.stdout)
+                    ))
+                    .await?;
+            } else {
+                let error = format!(
+                    "Failed to add {} as child of parent {}:\n{}\n{}\n",
+                    child,
+                    parent,
+                    String::from_utf8_lossy(&command.stdout),
+                    String::from_utf8_lossy(&command.stderr)
+                );
+                self.file_manager.print_verbose(&error).await?;
 
-            Err(anyhow::Error::msg(error))
+                return Err(anyhow::Error::msg(error));
+            }
         }
+        Ok(())
     }
 
     async fn delete_device_identity(&self, device_id: &str) -> Result<bool> {
@@ -564,42 +574,51 @@ impl<'a> IoTHubDeviceManager<'a> {
         }
     }
 
-    async fn set_deployment(&self, device_id: &str, path: &str) -> Result<()> {
-        self.file_manager
-            .print_verbose(format!("Setting {}'s deployment to {}", device_id, path))
-            .await?;
-
-        let args = &[
-            "az iot edge set-modules",
-            "--device-id",
-            device_id,
-            "--hub-name",
-            &self.config.iothub.iothub_name,
-            "--content",
-            path,
-        ];
-        let command = run_command(args).output().await?;
-        if command.status.success() {
+    async fn set_deployment(&self, config: &DeviceConfig<'_>) -> Result<()> {
+        if let Some(path) = config.deployment() {
             self.file_manager
                 .print_verbose(format!(
-                    "Successfully set deployment for {}.\n{}",
-                    device_id,
-                    String::from_utf8_lossy(&command.stdout)
+                    "Setting {}'s {} to {}",
+                    config.device_id(),
+                    match config {
+                        DeviceConfig::Edge(_) => "deployment",
+                        DeviceConfig::Leaf(_) => "twin",
+                    },
+                    path
                 ))
                 .await?;
 
-            Ok(())
-        } else {
-            let error = format!(
-                "Failed to set deployment for {}:\n{}\n{}\n",
-                device_id,
-                String::from_utf8_lossy(&command.stdout),
-                String::from_utf8_lossy(&command.stderr)
-            );
-            self.file_manager.print_verbose(&error).await?;
+            let args = &[
+                "az iot edge set-modules",
+                "--device-id",
+                config.device_id(),
+                "--hub-name",
+                &self.config.iothub.iothub_name,
+                "--content",
+                path,
+            ];
+            let command = run_command(args).output().await?;
+            if command.status.success() {
+                self.file_manager
+                    .print_verbose(format!(
+                        "Successfully set deployment for {}.\n{}",
+                        config.device_id(),
+                        String::from_utf8_lossy(&command.stdout)
+                    ))
+                    .await?;
+            } else {
+                let error = format!(
+                    "Failed to set deployment for {}:\n{}\n{}\n",
+                    config.device_id(),
+                    String::from_utf8_lossy(&command.stdout),
+                    String::from_utf8_lossy(&command.stderr)
+                );
+                self.file_manager.print_verbose(&error).await?;
 
-            Err(anyhow::Error::msg(error))
+                return Err(anyhow::Error::msg(error));
+            }
         }
+        Ok(())
     }
 }
 
@@ -632,12 +651,9 @@ impl<'a> CertManager<'a> {
         Ok(path)
     }
 
+    // This will also give all devices (including leaf) trust bundles
     pub async fn make_all_device_ca_certs(&self) -> Result<()> {
-        let device_ids: Vec<&str> = FlatenedDevice::flatten_devices(&self.config.root_device)
-            .iter()
-            .map(|d| d.config.device_id())
-            .collect();
-
+        // Write config file
         let config = self
             .file_manager
             .get_folder("certificates")
@@ -645,6 +661,7 @@ impl<'a> CertManager<'a> {
             .join("v3_ca_extensions.cnf");
         fs::write(config, include_str!(r#"scripts/v3_ca_extensions.cnf"#)).await?;
 
+        // Get Root CA
         let (cert_path, key_path) = if let Some(certificates) = &self.config.certificates {
             self.file_manager
                 .print(format!(
@@ -661,25 +678,49 @@ impl<'a> CertManager<'a> {
             self.make_root_cert().await?
         };
 
+        // Create all edge server certs
+        let edge_device_ids: Vec<&str> = FlatenedDevice::flatten_devices(&self.config.root_device)
+            .iter()
+            .filter_map(|d| match d.config {
+                DeviceConfig::Edge(d) => Some(d.device_id.as_str()),
+                DeviceConfig::Leaf(_) => None,
+            })
+            .collect();
+
         self.file_manager
             .print(format!(
-                "Creating certificates for {} devices",
-                device_ids.len(),
+                "Creating edge server certificates for {} devices",
+                edge_device_ids.len(),
             ))
             .await?;
 
-        let futures = device_ids
+        let make_ca_futures = edge_device_ids
             .iter()
             .map(|d| self.make_device_ca_cert(d, &cert_path, &key_path));
 
-        futures::future::join_all(futures)
+        futures::future::join_all(make_ca_futures)
             .await
             .into_iter()
             .collect::<Result<Vec<()>>>()?;
 
         self.file_manager
-            .print_verbose("Created all device certs.")
+            .print_verbose("Created all edge server certs.")
             .await?;
+
+        // Copy trust bundle for all devices
+        let device_ids: Vec<&str> = FlatenedDevice::flatten_devices(&self.config.root_device)
+            .iter()
+            .map(|d| d.config.device_id())
+            .collect();
+
+        let trust_bundle_futures = device_ids
+            .iter()
+            .map(|id| self.copy_trust_bundle(id, &cert_path));
+
+        futures::future::join_all(trust_bundle_futures)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<()>>>()?;
 
         Ok(())
     }
@@ -744,7 +785,7 @@ impl<'a> CertManager<'a> {
         let device_folder = self.file_manager.get_folder(device_id).await?;
         let csr = device_folder.join("device-id.csr");
         let device_key = device_folder.join(format!("{}.key.pem", device_id));
-        let device_cert = device_folder.join(format!("{}.cert.pem", device_id));
+        let device_ca_cert = device_folder.join(format!("{}.cert.pem", device_id));
         let config = self
             .file_manager
             .get_folder("certificates")
@@ -799,7 +840,7 @@ impl<'a> CertManager<'a> {
                 "v3_ca",
             ])
             .args(&[OsStr::new("-in"), csr.as_os_str()])
-            .args(&[OsStr::new("-out"), device_cert.as_os_str()])
+            .args(&[OsStr::new("-out"), device_ca_cert.as_os_str()])
             .args(&[OsStr::new("-CA"), ca_cert_path.as_os_str()])
             .args(&[OsStr::new("-CAkey"), ca_key_path.as_os_str()])
             .args(&[OsStr::new("-extfile"), config.as_os_str()])
@@ -821,26 +862,17 @@ impl<'a> CertManager<'a> {
             )));
         }
 
+        fs::remove_file(csr).await?;
+
         self.file_manager
             .print_verbose(format!(
-                "Successfully made cert {:?}. Copying root cert to folder.",
-                device_cert
+                "Successfully made cert {:?}. Making cert chain.",
+                device_ca_cert
             ))
             .await?;
 
-        fs::remove_file(csr).await?;
-        fs::copy(
-            ca_cert_path,
-            device_folder.join(ca_cert_path.file_name().unwrap()),
-        )
-        .await?;
-
-        self.file_manager
-            .print_verbose("Copied Root. Making cert chain.")
-            .await?;
-
         Self::make_cert_chain(
-            &[&device_cert, ca_cert_path],
+            &[&device_ca_cert, ca_cert_path],
             &self.device_ca_path(device_id).await?,
         )
         .await?;
@@ -880,6 +912,17 @@ impl<'a> CertManager<'a> {
             .await?;
 
         Ok(device_cert)
+    }
+
+    async fn copy_trust_bundle(&self, device_id: &str, ca_cert_path: &Path) -> Result<()> {
+        let trust_bundle_path = self
+            .file_manager
+            .get_folder(device_id)
+            .await?
+            .join("trust_bundle.pem");
+        fs::copy(ca_cert_path, trust_bundle_path).await?;
+
+        Ok(())
     }
 
     pub async fn get_thumbprint(&self, cert: &Path) -> Result<String> {
@@ -1460,42 +1503,52 @@ mod tests {
             .collect::<Result<Vec<PathBuf>>>()
             .expect("Could not make all hub auth certs");
 
-        let validate_certs = FlatenedDevice::flatten_devices(&config.root_device)
-            .into_iter()
-            .map(|device| {
-                validate_created_certs(&file_manager, &cert_manager, device.config.device_id())
-            });
+        let devices = FlatenedDevice::flatten_devices(&config.root_device);
+        let validate_certs = devices
+            .iter()
+            .map(|device| validate_created_certs(&file_manager, &cert_manager, &device.config));
         futures::future::join_all(validate_certs).await;
     }
 
     async fn validate_created_certs(
         file_manager: &FileManager,
         cert_manager: &CertManager<'_>,
-        device_id: &str,
+        config: &DeviceConfig<'_>,
     ) {
-        println!("Validating {}'s certs", device_id);
-        let dir = file_manager.get_folder(device_id).await.unwrap();
+        println!("Validating {}'s certs", config.device_id());
+        let dir = file_manager.get_folder(config.device_id()).await.unwrap();
 
-        assert!(dir.join(format!("{}.cert.pem", device_id)).exists());
-        assert!(dir.join(format!("{}.key.pem", device_id)).exists());
+        // Validate Trust Bundle
+        let trust_bundle = dir.join("trust_bundle.pem");
+        assert!(trust_bundle.exists());
 
-        let chain = dir.join(format!("{}.full-chain.cert.pem", device_id));
-        assert!(chain.exists());
+        let server_cert = dir.join(format!("{}.cert.pem", config.device_id()));
+        let server_key = dir.join(format!("{}.key.pem", config.device_id()));
+        let chain = dir.join(format!("{}.full-chain.cert.pem", config.device_id()));
+        match config {
+            DeviceConfig::Edge(_) => {
+                assert!(server_cert.exists());
+                assert!(server_key.exists());
+                assert!(chain.exists());
 
-        let root = dir.join("iotedge_config_cli_root.pem");
-        assert!(root.exists());
-
-        let verify = cert_manager
-            .openssl_command()
-            .arg("verify")
-            .args(&[OsStr::new("-CAfile"), root.as_os_str()])
-            .arg(chain.as_os_str())
-            .spawn()
-            .expect("Could not shell out to openssl")
-            .wait()
-            .await
-            .expect("Could not shell out to openssl");
-        assert!(verify.success());
+                let verify = cert_manager
+                    .openssl_command()
+                    .arg("verify")
+                    .args(&[OsStr::new("-CAfile"), trust_bundle.as_os_str()])
+                    .arg(chain.as_os_str())
+                    .spawn()
+                    .expect("Could not shell out to openssl")
+                    .wait()
+                    .await
+                    .expect("Could not shell out to openssl");
+                assert!(verify.success());
+            }
+            DeviceConfig::Leaf(_) => {
+                assert!(!server_cert.exists());
+                assert!(!server_key.exists());
+                assert!(!chain.exists());
+            }
+        }
     }
 
     #[tokio::test]

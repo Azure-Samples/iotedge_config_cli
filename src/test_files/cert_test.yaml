@@ -15,4 +15,8 @@ edgedevices:
       - device_id: AA
         child:
           - device_id: AAA
+        leaf:
+          - device_id: L-AAA
       - device_id: AB
+    leaf:
+      - device_id: L-AA
