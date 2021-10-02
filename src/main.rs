@@ -262,9 +262,9 @@ struct FlatenedDevice<'a> {
 }
 
 impl<'a> FlatenedDevice<'a> {
-    pub fn flatten_devices(roots: &'a Vec<config::EdgeDeviceConfig>) -> Vec<Self> {
+    pub fn flatten_devices(roots: &'a [config::EdgeDeviceConfig]) -> Vec<Self> {
         roots
-            .into_iter()
+            .iter()
             .flat_map(|root| Self::flatten_devices_internal(root, None))
             .collect()
     }
@@ -278,7 +278,7 @@ impl<'a> FlatenedDevice<'a> {
             parent,
         }];
         for child in &device.children {
-            result.append(&mut Self::flatten_devices_internal(&child, Some(device)));
+            result.append(&mut Self::flatten_devices_internal(child, Some(device)));
         }
 
         for leaf in &device.leaves {
@@ -414,7 +414,7 @@ impl<'a> IoTHubDeviceManager<'a> {
         let mut args = vec![
             "az iot hub device-identity create",
             "--device-id",
-            &device.config.device_id(),
+            device.config.device_id(),
             "--hub-name",
             &self.config.iothub.iothub_name,
         ];
@@ -1022,7 +1022,7 @@ impl<'a> EdgeDeviceConfigManager<'a> {
             .await?;
 
         for device in devices {
-            self.make_device_config(&device, &mut base_config).await?;
+            self.make_device_config(device, &mut base_config).await?;
         }
 
         self.file_manager
@@ -1338,7 +1338,7 @@ impl<'a> ScriptManager<'a> {
             .await?;
 
         for device in devices {
-            self.add_install_scripts_internal(&device).await?;
+            self.add_install_scripts_internal(device).await?;
             self.copy_device_readme(device).await?;
         }
 
@@ -1412,11 +1412,11 @@ impl<'a> ScriptManager<'a> {
 }
 
 async fn visualize_terminal(
-    roots: &Vec<config::EdgeDeviceConfig>,
+    roots: &[config::EdgeDeviceConfig],
     file_manager: &FileManager,
 ) -> Result<()> {
     let result = roots
-        .into_iter()
+        .iter()
         .map(|root| make_tree(root, ""))
         .collect::<Result<Vec<String>>>()?
         .join("\n");
@@ -1440,7 +1440,7 @@ fn make_tree(device: &config::EdgeDeviceConfig, prefix: &str) -> Result<String> 
 
         let child_prefix = if is_last { "    " } else { "│   " };
         let child_prefix = [prefix, child_prefix].concat();
-        result.push(make_tree(&child, &child_prefix)?);
+        result.push(make_tree(child, &child_prefix)?);
     }
 
     for leaf in &device.leaves {

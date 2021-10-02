@@ -58,7 +58,6 @@ pub struct LeafDeviceConfig {
     pub deployment: Option<String>,
 }
 
-
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct ContainerAuth {
     pub serveraddress: String,
