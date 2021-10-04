@@ -9,7 +9,7 @@ pub struct Config {
     pub certificates: Option<Certificates>,
     pub configuration: Configuration,
     #[serde(rename = "edgedevices")]
-    pub root_device: Vec<EdgeDeviceConfig>,
+    pub root_devices: Vec<EdgeDeviceConfig>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]

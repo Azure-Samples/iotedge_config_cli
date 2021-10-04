@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
     config.check_hostnames(&file_manager).await?;
     device_config_manager.validate_config().await?;
 
-    visualize_terminal(&config.root_device, &file_manager).await?;
+    visualize_terminal(&config.root_devices, &file_manager).await?;
     if args.visualize {
         return Ok(());
     }
@@ -188,7 +188,7 @@ impl config::Config {
     }
 
     async fn check_device_ids(&self) -> Result<()> {
-        let devices = FlatenedDevice::flatten_devices(&self.root_device);
+        let devices = FlatenedDevice::flatten_devices(&self.root_devices);
         let mut map = HashSet::new();
 
         for device in devices {
@@ -206,7 +206,7 @@ impl config::Config {
     }
 
     async fn check_hostnames(&self, file_manager: &FileManager) -> Result<()> {
-        let devices = FlatenedDevice::flatten_devices(&self.root_device);
+        let devices = FlatenedDevice::flatten_devices(&self.root_devices);
         let mut map = HashMap::new();
 
         for device in devices {
@@ -320,7 +320,7 @@ impl<'a> IoTHubDeviceManager<'a> {
     // Consider running "az extension update --name azure-iot"
 
     pub async fn create_devices(&self) -> Result<Vec<CreatedDevice<'_>>> {
-        let devices_to_create = FlatenedDevice::flatten_devices(&self.config.root_device);
+        let devices_to_create = FlatenedDevice::flatten_devices(&self.config.root_devices);
         self.file_manager
             .print(&format!(
                 "Creating {} devices in hub {}",
@@ -360,7 +360,7 @@ impl<'a> IoTHubDeviceManager<'a> {
     }
 
     pub async fn delete_devices(&self) -> Result<()> {
-        let devices_to_delete = FlatenedDevice::flatten_devices(&self.config.root_device);
+        let devices_to_delete = FlatenedDevice::flatten_devices(&self.config.root_devices);
         self.file_manager
             .print(&format!(
                 "Deleting {} devices from hub {}",
@@ -680,7 +680,7 @@ impl<'a> CertManager<'a> {
         };
 
         // Create all edge server certs
-        let edge_device_ids: Vec<&str> = FlatenedDevice::flatten_devices(&self.config.root_device)
+        let edge_device_ids: Vec<&str> = FlatenedDevice::flatten_devices(&self.config.root_devices)
             .iter()
             .filter_map(|d| match d.config {
                 DeviceConfig::Edge(d) => Some(d.device_id.as_str()),
@@ -709,7 +709,7 @@ impl<'a> CertManager<'a> {
             .await?;
 
         // Copy trust bundle for all devices
-        let device_ids: Vec<&str> = FlatenedDevice::flatten_devices(&self.config.root_device)
+        let device_ids: Vec<&str> = FlatenedDevice::flatten_devices(&self.config.root_devices)
             .iter()
             .map(|d| d.config.device_id())
             .collect();
@@ -1497,7 +1497,7 @@ mod tests {
             .await
             .expect("Could not make all certs");
 
-        let make_auth_certs = FlatenedDevice::flatten_devices(&config.root_device)
+        let make_auth_certs = FlatenedDevice::flatten_devices(&config.root_devices)
             .into_iter()
             .map(|device| cert_manager.make_hub_auth_cert(device.config.device_id()));
         futures::future::join_all(make_auth_certs)
@@ -1506,7 +1506,7 @@ mod tests {
             .collect::<Result<Vec<PathBuf>>>()
             .expect("Could not make all hub auth certs");
 
-        let devices = FlatenedDevice::flatten_devices(&config.root_device);
+        let devices = FlatenedDevice::flatten_devices(&config.root_devices);
         let validate_certs = devices
             .iter()
             .map(|device| validate_created_certs(&file_manager, &cert_manager, &device.config));
