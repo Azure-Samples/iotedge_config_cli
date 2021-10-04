@@ -432,15 +432,16 @@ impl<'a> IoTHubDeviceManager<'a> {
                 .await?;
 
             primary_thumbprint = self.cert_manager.get_thumbprint(&auth_cert).await?;
-            secondary_thumbprint = self
-                .cert_manager
-                .get_thumbprint(
-                    &self
-                        .cert_manager
-                        .device_ca_path(device.config.device_id())
-                        .await?,
-                )
-                .await?;
+            // secondary_thumbprint = self
+            //     .cert_manager
+            //     .get_thumbprint(
+            //         &self
+            //             .cert_manager
+            //             .device_ca_path(device.config.device_id())
+            //             .await?,
+            //     )
+            //     .await?;
+            secondary_thumbprint = (0..40).map(|_| "0").collect::<Vec<&str>>().join("");
 
             args.extend(&["--auth-method", "x509_thumbprint"]);
             args.extend(&["--primary-thumbprint", &primary_thumbprint]);
@@ -1402,9 +1403,11 @@ impl<'a> ScriptManager<'a> {
 
         match device.config {
             DeviceConfig::Edge(_) => {
-                fs::write(file, include_str!(r#"docs/device_readme.md"#)).await?
+                fs::write(file, include_str!(r#"docs/edge_device_readme.md"#)).await?
             }
-            DeviceConfig::Leaf(_) => todo!(),
+            DeviceConfig::Leaf(_) => {
+                fs::write(file, include_str!(r#"docs/leaf_device_readme.md"#)).await?
+            }
         }
 
         Ok(())

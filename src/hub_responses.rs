@@ -9,7 +9,7 @@ pub struct CreateResponse {
     pub connection_state: String,
     pub connection_state_updated_time: String,
     pub device_id: String,
-    pub device_scope: String,
+    pub device_scope: Option<String>,
     pub etag: String,
     pub generation_id: String,
     pub last_activity_time: String,
