@@ -5,7 +5,7 @@
                 "modules": {
                     "simulatedTemperatureSensor": {
                         "settings": {
-                            "image": "$upstream:8000/azureiotedge-simulated-temperature-sensor:1.0",
+                            "image": "$upstream:443/azureiotedge-simulated-temperature-sensor:1.0",
                             "createOptions": ""
                         },
                         "type": "docker",
@@ -24,14 +24,14 @@
                 "systemModules": {
                     "edgeAgent": {
                         "settings": {
-                            "image": "$upstream:8000/azureiotedge-agent:1.2",
+                            "image": "$upstream:443/azureiotedge-agent:1.2",
                             "createOptions": ""
                         },
                         "type": "docker"
                     },
                     "edgeHub": {
                         "settings": {
-                            "image": "$upstream:8000/azureiotedge-hub:1.2",
+                            "image": "$upstream:443/azureiotedge-hub:1.2",
                             "createOptions": "{\"HostConfig\":{\"PortBindings\":{\"443/tcp\":[{\"HostPort\":\"443\"}],\"5671/tcp\":[{\"HostPort\":\"5671\"}],\"8883/tcp\":[{\"HostPort\":\"8883\"}]}}}"
                         },
                         "type": "docker",
