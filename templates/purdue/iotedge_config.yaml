@@ -18,29 +18,29 @@ configuration:
 
 ## Hierarchy of IoT Edge devices to create
 edgedevices:
-  device_id: L5-edge
-  edge_agent: "mcr.microsoft.com/azureiotedge-agent:1.2" ## Optional. If not provided, default_edge_agent will be used
-  deployment: "./templates/purdue/deployment-L5.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
-  # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value
-  child:
-    - device_id: L4-edge-1
-      deployment: "./templates/purdue/deployment-L4.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
-      # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value nor the parent_hostname value
-      child:
-        - device_id: L3-edge-1
-          deployment: "./templates/purdue/deployment-L3.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
-          # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value nor the parent_hostname value
-        - device_id: L3-edge-2
-          deployment: "./templates/purdue/deployment-L3.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
-          # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value nor the parent_hostname value
-    - device_id: L4-edge-2
-      deployment: "./templates/purdue/deployment-L4.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
-      # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value nor the parent_hostname value
-      child:
-        - device_id: L3-edge-3
-          deployment: "./templates/purdue/deployment-L3.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
-          # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value nor the parent_hostname value
-        - device_id: L3-edge-4
-          deployment: "./templates/purdue/deployment-L3.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
-          # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value nor the parent_hostname value
+  - device_id: L5-edge
+    edge_agent: "mcr.microsoft.com/azureiotedge-agent:1.2" ## Optional. If not provided, default_edge_agent will be used
+    deployment: "./templates/purdue/deployment-L5.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
+    # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value
+    child:
+      - device_id: L4-edge-1
+        deployment: "./templates/purdue/deployment-L4.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
+        # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value nor the parent_hostname value
+        child:
+          - device_id: L3-edge-1
+            deployment: "./templates/purdue/deployment-L3.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
+            # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value nor the parent_hostname value
+          - device_id: L3-edge-2
+            deployment: "./templates/purdue/deployment-L3.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
+            # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value nor the parent_hostname value
+      - device_id: L4-edge-2
+        deployment: "./templates/purdue/deployment-L4.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
+        # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value nor the parent_hostname value
+        child:
+          - device_id: L3-edge-3
+            deployment: "./templates/purdue/deployment-L3.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
+            # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value nor the parent_hostname value
+          - device_id: L3-edge-4
+            deployment: "./templates/purdue/deployment-L3.json" ## Optional. If provided, the given deployment file will be applied to the newly created device
+            # hostname: "FQDN or IP" ## Optional. If provided, install.sh will not prompt user for this value nor the parent_hostname value
 

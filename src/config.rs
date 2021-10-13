@@ -9,7 +9,7 @@ pub struct Config {
     pub certificates: Option<Certificates>,
     pub configuration: Configuration,
     #[serde(rename = "edgedevices")]
-    pub root_device: DeviceConfig,
+    pub root_devices: Vec<EdgeDeviceConfig>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -40,14 +40,22 @@ pub struct Configuration {
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-pub struct DeviceConfig {
+pub struct EdgeDeviceConfig {
     pub device_id: String,
     pub deployment: Option<String>,
     pub hostname: Option<String>,
     pub edge_agent: Option<String>,
     pub container_auth: Option<ContainerAuth>,
     #[serde(default, rename = "child")]
-    pub children: Vec<DeviceConfig>,
+    pub children: Vec<EdgeDeviceConfig>,
+    #[serde(default, rename = "leaf")]
+    pub leaves: Vec<LeafDeviceConfig>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct LeafDeviceConfig {
+    pub device_id: String,
+    pub deployment: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]

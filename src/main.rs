@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
     let file_manager = FileManager::new(&args.output, args.verbose).await?;
     let cert_manager = CertManager::new(&config, &file_manager, args.openssl_path.as_deref());
     let hub_manager = IoTHubDeviceManager::new(&config, &file_manager, &cert_manager);
-    let device_config_manager = DeviceConfigManager::new(&config, &file_manager);
+    let device_config_manager = EdgeDeviceConfigManager::new(&config, &file_manager);
     let script_manager = ScriptManager::new(&config, &file_manager);
 
     file_manager
@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
     config.check_hostnames(&file_manager).await?;
     device_config_manager.validate_config().await?;
 
-    visualize_terminal(&config.root_device, &file_manager).await?;
+    visualize_terminal(&config.root_devices, &file_manager).await?;
     if args.visualize {
         return Ok(());
     }
@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
             .await?;
         for device in created_devices {
             file_manager
-                .zip_dir(file_manager.get_folder(&device.device.device_id).await?)
+                .zip_dir(file_manager.get_folder(device.config.device_id()).await?)
                 .await?
         }
 
@@ -188,12 +188,15 @@ impl config::Config {
     }
 
     async fn check_device_ids(&self) -> Result<()> {
-        let devices = FlatenedDevice::flatten_devices(&self.root_device);
+        let devices = FlatenedDevice::flatten_devices(&self.root_devices);
         let mut map = HashSet::new();
 
         for device in devices {
-            if !map.insert(&device.device.device_id) {
-                let error = format!(r#"device id "{}" is used twice!"#, device.device.device_id);
+            if !map.insert(device.config.device_id()) {
+                let error = format!(
+                    r#"device id "{}" is used twice!"#,
+                    device.config.device_id()
+                );
 
                 return Err(anyhow::Error::msg(error));
             }
@@ -203,18 +206,20 @@ impl config::Config {
     }
 
     async fn check_hostnames(&self, file_manager: &FileManager) -> Result<()> {
-        let devices = FlatenedDevice::flatten_devices(&self.root_device);
+        let devices = FlatenedDevice::flatten_devices(&self.root_devices);
         let mut map = HashMap::new();
 
         for device in devices {
-            if let Some(hostname) = &device.device.hostname {
-                if let Some(old) = map.insert(hostname, &device.device.device_id) {
-                    file_manager
-                        .print(format!(
-                            "\n\nWARNING: {} and {} share the hostname {}\n\n",
-                            old, device.device.device_id, hostname
-                        ))
-                        .await?;
+            if let DeviceConfig::Edge(device) = device.config {
+                if let Some(hostname) = &device.hostname {
+                    if let Some(old) = map.insert(hostname, &device.device_id) {
+                        file_manager
+                            .print(format!(
+                                "\n\nWARNING: {} and {} share the hostname {}\n\n",
+                                old, device.device_id, hostname
+                            ))
+                            .await?;
+                    }
                 }
             }
         }
@@ -222,24 +227,65 @@ impl config::Config {
         Ok(())
     }
 }
+#[derive(Clone)]
+enum DeviceConfig<'a> {
+    Edge(&'a config::EdgeDeviceConfig),
+    Leaf(&'a config::LeafDeviceConfig),
+}
+
+impl<'a> DeviceConfig<'a> {
+    fn device_id(&self) -> &'a str {
+        match self {
+            DeviceConfig::Edge(d) => &d.device_id,
+            DeviceConfig::Leaf(d) => &d.device_id,
+        }
+    }
+
+    fn deployment(&self) -> Option<&'a String> {
+        match self {
+            DeviceConfig::Edge(d) => d.deployment.as_ref(),
+            DeviceConfig::Leaf(d) => d.deployment.as_ref(),
+        }
+    }
+
+    fn device_type(&self) -> &str {
+        match self {
+            DeviceConfig::Edge(_) => "edge",
+            DeviceConfig::Leaf(_) => "leaf",
+        }
+    }
+}
 
 struct FlatenedDevice<'a> {
-    device: &'a config::DeviceConfig,
-    parent: Option<&'a config::DeviceConfig>,
+    config: DeviceConfig<'a>,
+    parent: Option<&'a config::EdgeDeviceConfig>,
 }
 
 impl<'a> FlatenedDevice<'a> {
-    pub fn flatten_devices(root: &'a config::DeviceConfig) -> Vec<Self> {
-        Self::flatten_devices_internal(root, None)
+    pub fn flatten_devices(roots: &'a [config::EdgeDeviceConfig]) -> Vec<Self> {
+        roots
+            .iter()
+            .flat_map(|root| Self::flatten_devices_internal(root, None))
+            .collect()
     }
 
     fn flatten_devices_internal(
-        device: &'a config::DeviceConfig,
-        parent: Option<&'a config::DeviceConfig>,
+        device: &'a config::EdgeDeviceConfig,
+        parent: Option<&'a config::EdgeDeviceConfig>,
     ) -> Vec<Self> {
-        let mut result: Vec<FlatenedDevice> = vec![FlatenedDevice { device, parent }];
+        let mut result: Vec<FlatenedDevice> = vec![FlatenedDevice {
+            config: DeviceConfig::Edge(device),
+            parent,
+        }];
         for child in &device.children {
-            result.append(&mut Self::flatten_devices_internal(&child, Some(device)));
+            result.append(&mut Self::flatten_devices_internal(child, Some(device)));
+        }
+
+        for leaf in &device.leaves {
+            result.push(FlatenedDevice {
+                config: DeviceConfig::Leaf(leaf),
+                parent: Some(device),
+            })
         }
 
         result
@@ -247,8 +293,8 @@ impl<'a> FlatenedDevice<'a> {
 }
 
 struct CreatedDevice<'a> {
-    device: &'a config::DeviceConfig,
-    parent: Option<&'a config::DeviceConfig>,
+    config: DeviceConfig<'a>,
+    parent: Option<&'a config::EdgeDeviceConfig>,
     create_response: hub_responses::CreateResponse,
 }
 
@@ -274,8 +320,7 @@ impl<'a> IoTHubDeviceManager<'a> {
     // Consider running "az extension update --name azure-iot"
 
     pub async fn create_devices(&self) -> Result<Vec<CreatedDevice<'_>>> {
-        // Create devices
-        let devices_to_create = FlatenedDevice::flatten_devices(&self.config.root_device);
+        let devices_to_create = FlatenedDevice::flatten_devices(&self.config.root_devices);
         self.file_manager
             .print(&format!(
                 "Creating {} devices in hub {}",
@@ -284,6 +329,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             ))
             .await?;
 
+        // Create devices
         let futures = devices_to_create
             .iter()
             .map(|d| self.create_device_identity(d));
@@ -294,17 +340,13 @@ impl<'a> IoTHubDeviceManager<'a> {
             .collect::<Result<Vec<CreatedDevice<'_>>>>()?;
 
         // Add parent-child relationships
-        let relationships_to_add = created_devices.iter().filter_map(|child| {
-            child
-                .parent
-                .map(|parent| (&parent.device_id, &child.device.device_id))
-        });
         self.file_manager
             .print_verbose("Adding parent-child relationships.")
             .await?;
 
-        let futures = relationships_to_add
-            .map(|(parent, child)| self.create_parent_child_relationship(parent, child));
+        let futures = devices_to_create
+            .iter()
+            .map(|d| self.create_parent_child_relationship(d));
 
         futures::future::join_all(futures)
             .await
@@ -318,7 +360,7 @@ impl<'a> IoTHubDeviceManager<'a> {
     }
 
     pub async fn delete_devices(&self) -> Result<()> {
-        let devices_to_delete = FlatenedDevice::flatten_devices(&self.config.root_device);
+        let devices_to_delete = FlatenedDevice::flatten_devices(&self.config.root_devices);
         self.file_manager
             .print(&format!(
                 "Deleting {} devices from hub {}",
@@ -329,7 +371,7 @@ impl<'a> IoTHubDeviceManager<'a> {
 
         let futures = devices_to_delete
             .iter()
-            .map(|d| self.delete_device_identity(&d.device.device_id));
+            .map(|d| self.delete_device_identity(d.config.device_id()));
 
         let num_successes = futures::future::join_all(futures)
             .await
@@ -362,38 +404,44 @@ impl<'a> IoTHubDeviceManager<'a> {
     ) -> Result<CreatedDevice<'b>> {
         self.file_manager
             .print_verbose(format!(
-                "Creating device {} on hub {}",
-                device.device.device_id, self.config.iothub.iothub_name
+                "Creating {} device {} on hub {}",
+                device.config.device_type(),
+                device.config.device_id(),
+                self.config.iothub.iothub_name
             ))
             .await?;
 
         let mut args = vec![
             "az iot hub device-identity create",
             "--device-id",
-            &device.device.device_id,
+            device.config.device_id(),
             "--hub-name",
             &self.config.iothub.iothub_name,
-            "--edge-enabled",
         ];
+
+        if let DeviceConfig::Edge(_) = device.config {
+            args.push("--edge-enabled");
+        }
 
         let primary_thumbprint: String;
         let secondary_thumbprint: String;
         if self.config.iothub.authentication_method == config::IoTHubAuthMethod::X509Cert {
             let auth_cert = self
                 .cert_manager
-                .make_hub_auth_cert(&device.device.device_id)
+                .make_hub_auth_cert(device.config.device_id())
                 .await?;
 
             primary_thumbprint = self.cert_manager.get_thumbprint(&auth_cert).await?;
-            secondary_thumbprint = self
-                .cert_manager
-                .get_thumbprint(
-                    &self
-                        .cert_manager
-                        .device_ca_path(&device.device.device_id)
-                        .await?,
-                )
-                .await?;
+            // secondary_thumbprint = self
+            //     .cert_manager
+            //     .get_thumbprint(
+            //         &self
+            //             .cert_manager
+            //             .device_ca_path(device.config.device_id())
+            //             .await?,
+            //     )
+            //     .await?;
+            secondary_thumbprint = (0..40).map(|_| "0").collect::<Vec<&str>>().join("");
 
             args.extend(&["--auth-method", "x509_thumbprint"]);
             args.extend(&["--primary-thumbprint", &primary_thumbprint]);
@@ -405,7 +453,7 @@ impl<'a> IoTHubDeviceManager<'a> {
             self.file_manager
                 .print_verbose(format!(
                     "Successfully created {}.\n{}",
-                    device.device.device_id,
+                    device.config.device_id(),
                     String::from_utf8_lossy(&command.stdout)
                 ))
                 .await?;
@@ -413,19 +461,17 @@ impl<'a> IoTHubDeviceManager<'a> {
             let created_device: hub_responses::CreateResponse =
                 serde_json::from_slice(&command.stdout)?;
 
-            if let Some(deployment) = &device.device.deployment {
-                self.set_deployment(&device.device.device_id, &deployment)
-                    .await?;
-            }
+            self.set_deployment(&device.config).await?;
+
             Ok(CreatedDevice {
-                device: device.device,
+                config: device.config.clone(),
                 parent: device.parent,
                 create_response: created_device,
             })
         } else {
             let error = format!(
                 "Failed to create {}:\n{}\n{}\nMake sure you are running as sudo and try using the -f flag to delete existing devices before creation.",
-                device.device.device_id,
+                device.config.device_id(),
                 String::from_utf8_lossy(&command.stdout),
                 String::from_utf8_lossy(&command.stderr)
             );
@@ -435,44 +481,52 @@ impl<'a> IoTHubDeviceManager<'a> {
         }
     }
 
-    async fn create_parent_child_relationship(&self, parent: &str, child: &str) -> Result<()> {
-        self.file_manager
-            .print_verbose(format!("Adding {} as child of parent {}.", child, parent,))
-            .await?;
-
-        let args = &[
-            "az iot hub device-identity parent set",
-            "--device-id",
-            child,
-            "--parent-device-id",
-            parent,
-            "--hub-name",
-            &self.config.iothub.iothub_name,
-        ];
-        let command = run_command(args).output().await?;
-        if command.status.success() {
+    async fn create_parent_child_relationship(&self, device: &FlatenedDevice<'_>) -> Result<()> {
+        if let Some(parent) = device.parent {
+            let parent = &parent.device_id;
+            let child = device.config.device_id();
             self.file_manager
                 .print_verbose(format!(
-                    "Successfully added {} as child of parent {}.\n{}",
+                    "Adding {} device {} as child of parent {}.",
+                    device.config.device_type(),
                     child,
                     parent,
-                    String::from_utf8_lossy(&command.stdout)
                 ))
                 .await?;
 
-            Ok(())
-        } else {
-            let error = format!(
-                "Failed to add {} as child of parent {}:\n{}\n{}\n",
+            let args = &[
+                "az iot hub device-identity parent set",
+                "--device-id",
                 child,
+                "--parent-device-id",
                 parent,
-                String::from_utf8_lossy(&command.stdout),
-                String::from_utf8_lossy(&command.stderr)
-            );
-            self.file_manager.print_verbose(&error).await?;
+                "--hub-name",
+                &self.config.iothub.iothub_name,
+            ];
+            let command = run_command(args).output().await?;
+            if command.status.success() {
+                self.file_manager
+                    .print_verbose(format!(
+                        "Successfully added {} as child of parent {}.\n{}",
+                        child,
+                        parent,
+                        String::from_utf8_lossy(&command.stdout)
+                    ))
+                    .await?;
+            } else {
+                let error = format!(
+                    "Failed to add {} as child of parent {}:\n{}\n{}\n",
+                    child,
+                    parent,
+                    String::from_utf8_lossy(&command.stdout),
+                    String::from_utf8_lossy(&command.stderr)
+                );
+                self.file_manager.print_verbose(&error).await?;
 
-            Err(anyhow::Error::msg(error))
+                return Err(anyhow::Error::msg(error));
+            }
         }
+        Ok(())
     }
 
     async fn delete_device_identity(&self, device_id: &str) -> Result<bool> {
@@ -521,42 +575,51 @@ impl<'a> IoTHubDeviceManager<'a> {
         }
     }
 
-    async fn set_deployment(&self, device_id: &str, path: &str) -> Result<()> {
-        self.file_manager
-            .print_verbose(format!("Setting {}'s deployment to {}", device_id, path))
-            .await?;
-
-        let args = &[
-            "az iot edge set-modules",
-            "--device-id",
-            device_id,
-            "--hub-name",
-            &self.config.iothub.iothub_name,
-            "--content",
-            path,
-        ];
-        let command = run_command(args).output().await?;
-        if command.status.success() {
+    async fn set_deployment(&self, config: &DeviceConfig<'_>) -> Result<()> {
+        if let Some(path) = config.deployment() {
             self.file_manager
                 .print_verbose(format!(
-                    "Successfully set deployment for {}.\n{}",
-                    device_id,
-                    String::from_utf8_lossy(&command.stdout)
+                    "Setting {}'s {} to {}",
+                    config.device_id(),
+                    match config {
+                        DeviceConfig::Edge(_) => "deployment",
+                        DeviceConfig::Leaf(_) => "twin",
+                    },
+                    path
                 ))
                 .await?;
 
-            Ok(())
-        } else {
-            let error = format!(
-                "Failed to set deployment for {}:\n{}\n{}\n",
-                device_id,
-                String::from_utf8_lossy(&command.stdout),
-                String::from_utf8_lossy(&command.stderr)
-            );
-            self.file_manager.print_verbose(&error).await?;
+            let args = &[
+                "az iot edge set-modules",
+                "--device-id",
+                config.device_id(),
+                "--hub-name",
+                &self.config.iothub.iothub_name,
+                "--content",
+                path,
+            ];
+            let command = run_command(args).output().await?;
+            if command.status.success() {
+                self.file_manager
+                    .print_verbose(format!(
+                        "Successfully set deployment for {}.\n{}",
+                        config.device_id(),
+                        String::from_utf8_lossy(&command.stdout)
+                    ))
+                    .await?;
+            } else {
+                let error = format!(
+                    "Failed to set deployment for {}:\n{}\n{}\n",
+                    config.device_id(),
+                    String::from_utf8_lossy(&command.stdout),
+                    String::from_utf8_lossy(&command.stderr)
+                );
+                self.file_manager.print_verbose(&error).await?;
 
-            Err(anyhow::Error::msg(error))
+                return Err(anyhow::Error::msg(error));
+            }
         }
+        Ok(())
     }
 }
 
@@ -589,12 +652,9 @@ impl<'a> CertManager<'a> {
         Ok(path)
     }
 
+    // This will also give all devices (including leaf) trust bundles
     pub async fn make_all_device_ca_certs(&self) -> Result<()> {
-        let device_ids: Vec<&str> = FlatenedDevice::flatten_devices(&self.config.root_device)
-            .iter()
-            .map(|d| d.device.device_id.as_str())
-            .collect();
-
+        // Write config file
         let config = self
             .file_manager
             .get_folder("certificates")
@@ -602,6 +662,7 @@ impl<'a> CertManager<'a> {
             .join("v3_ca_extensions.cnf");
         fs::write(config, include_str!(r#"scripts/v3_ca_extensions.cnf"#)).await?;
 
+        // Get Root CA
         let (cert_path, key_path) = if let Some(certificates) = &self.config.certificates {
             self.file_manager
                 .print(format!(
@@ -618,25 +679,49 @@ impl<'a> CertManager<'a> {
             self.make_root_cert().await?
         };
 
+        // Create all edge server certs
+        let edge_device_ids: Vec<&str> = FlatenedDevice::flatten_devices(&self.config.root_devices)
+            .iter()
+            .filter_map(|d| match d.config {
+                DeviceConfig::Edge(d) => Some(d.device_id.as_str()),
+                DeviceConfig::Leaf(_) => None,
+            })
+            .collect();
+
         self.file_manager
             .print(format!(
-                "Creating certificates for {} devices",
-                device_ids.len(),
+                "Creating edge server certificates for {} devices",
+                edge_device_ids.len(),
             ))
             .await?;
 
-        let futures = device_ids
+        let make_ca_futures = edge_device_ids
             .iter()
             .map(|d| self.make_device_ca_cert(d, &cert_path, &key_path));
 
-        futures::future::join_all(futures)
+        futures::future::join_all(make_ca_futures)
             .await
             .into_iter()
             .collect::<Result<Vec<()>>>()?;
 
         self.file_manager
-            .print_verbose("Created all device certs.")
+            .print_verbose("Created all edge server certs.")
             .await?;
+
+        // Copy trust bundle for all devices
+        let device_ids: Vec<&str> = FlatenedDevice::flatten_devices(&self.config.root_devices)
+            .iter()
+            .map(|d| d.config.device_id())
+            .collect();
+
+        let trust_bundle_futures = device_ids
+            .iter()
+            .map(|id| self.copy_trust_bundle(id, &cert_path));
+
+        futures::future::join_all(trust_bundle_futures)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<()>>>()?;
 
         Ok(())
     }
@@ -701,7 +786,7 @@ impl<'a> CertManager<'a> {
         let device_folder = self.file_manager.get_folder(device_id).await?;
         let csr = device_folder.join("device-id.csr");
         let device_key = device_folder.join(format!("{}.key.pem", device_id));
-        let device_cert = device_folder.join(format!("{}.cert.pem", device_id));
+        let device_ca_cert = device_folder.join(format!("{}.cert.pem", device_id));
         let config = self
             .file_manager
             .get_folder("certificates")
@@ -756,7 +841,7 @@ impl<'a> CertManager<'a> {
                 "v3_ca",
             ])
             .args(&[OsStr::new("-in"), csr.as_os_str()])
-            .args(&[OsStr::new("-out"), device_cert.as_os_str()])
+            .args(&[OsStr::new("-out"), device_ca_cert.as_os_str()])
             .args(&[OsStr::new("-CA"), ca_cert_path.as_os_str()])
             .args(&[OsStr::new("-CAkey"), ca_key_path.as_os_str()])
             .args(&[OsStr::new("-extfile"), config.as_os_str()])
@@ -778,26 +863,17 @@ impl<'a> CertManager<'a> {
             )));
         }
 
+        fs::remove_file(csr).await?;
+
         self.file_manager
             .print_verbose(format!(
-                "Successfully made cert {:?}. Copying root cert to folder.",
-                device_cert
+                "Successfully made cert {:?}. Making cert chain.",
+                device_ca_cert
             ))
             .await?;
 
-        fs::remove_file(csr).await?;
-        fs::copy(
-            ca_cert_path,
-            device_folder.join(ca_cert_path.file_name().unwrap()),
-        )
-        .await?;
-
-        self.file_manager
-            .print_verbose("Copied Root. Making cert chain.")
-            .await?;
-
         Self::make_cert_chain(
-            &[&device_cert, ca_cert_path],
+            &[&device_ca_cert, ca_cert_path],
             &self.device_ca_path(device_id).await?,
         )
         .await?;
@@ -837,6 +913,17 @@ impl<'a> CertManager<'a> {
             .await?;
 
         Ok(device_cert)
+    }
+
+    async fn copy_trust_bundle(&self, device_id: &str, ca_cert_path: &Path) -> Result<()> {
+        let trust_bundle_path = self
+            .file_manager
+            .get_folder(device_id)
+            .await?
+            .join("trust_bundle.pem");
+        fs::copy(ca_cert_path, trust_bundle_path).await?;
+
+        Ok(())
     }
 
     pub async fn get_thumbprint(&self, cert: &Path) -> Result<String> {
@@ -899,12 +986,12 @@ impl<'a> CertManager<'a> {
     }
 }
 
-struct DeviceConfigManager<'a> {
+struct EdgeDeviceConfigManager<'a> {
     config: &'a config::Config,
     file_manager: &'a FileManager,
 }
 
-impl<'a> DeviceConfigManager<'a> {
+impl<'a> EdgeDeviceConfigManager<'a> {
     pub fn new(config: &'a config::Config, file_manager: &'a FileManager) -> Self {
         Self {
             config,
@@ -936,7 +1023,7 @@ impl<'a> DeviceConfigManager<'a> {
             .await?;
 
         for device in devices {
-            self.make_device_config(&device, &mut base_config).await?;
+            self.make_device_config(device, &mut base_config).await?;
         }
 
         self.file_manager
@@ -951,117 +1038,119 @@ impl<'a> DeviceConfigManager<'a> {
         device: &CreatedDevice<'_>,
         config: &mut iotedge_config::Config,
     ) -> Result<()> {
-        self.file_manager
-            .print_verbose(format!("Generating config for {}", device.device.device_id))
-            .await?;
+        if let DeviceConfig::Edge(device_config) = device.config {
+            self.file_manager
+                .print_verbose(format!("Generating config for {}", device_config.device_id))
+                .await?;
 
-        let authentication = match self.config.iothub.authentication_method {
-            config::IoTHubAuthMethod::SymmetricKey => {
-                aziot_config::ManualAuthMethod::SharedPrivateKey {
-                    device_id_pk: aziot_config::SymmetricKey::Inline {
-                        value: base64::decode(
-                            device
-                                .create_response
-                                .authentication
-                                .symmetric_key
-                                .primary_key
-                                .clone()
-                                .ok_or_else(|| {
-                                    anyhow::Error::msg("Hub response did not contain symmetric key")
-                                })?,
-                        )?,
-                    },
+            let authentication = match self.config.iothub.authentication_method {
+                config::IoTHubAuthMethod::SymmetricKey => {
+                    aziot_config::ManualAuthMethod::SharedPrivateKey {
+                        device_id_pk: aziot_config::SymmetricKey::Inline {
+                            value: base64::decode(
+                                device
+                                    .create_response
+                                    .authentication
+                                    .symmetric_key
+                                    .primary_key
+                                    .clone()
+                                    .ok_or_else(|| {
+                                        anyhow::Error::msg(
+                                            "Hub response did not contain symmetric key",
+                                        )
+                                    })?,
+                            )?,
+                        },
+                    }
                 }
-            }
-            config::IoTHubAuthMethod::X509Cert => aziot_config::ManualAuthMethod::X509 {
-                identity: aziot_config::X509Identity::Preloaded {
-                    identity_cert: Url::parse(&format!(
-                        "file:///etc/aziot/certificates/{}.hub-auth.cert.pem",
-                        device.device.device_id
-                    ))?,
-                    identity_pk: aziot_keys_common::PreloadedKeyLocation::Filesystem {
-                        // Leave off the file://, it is automatically added by the serializer
-                        path: format!(
-                            "/etc/aziot/certificates/{}.hub-auth.key.pem",
-                            device.device.device_id
-                        )
-                        .into(),
+                config::IoTHubAuthMethod::X509Cert => aziot_config::ManualAuthMethod::X509 {
+                    identity: aziot_config::X509Identity::Preloaded {
+                        identity_cert: Url::parse(&format!(
+                            "file:///etc/aziot/certificates/{}.hub-auth.cert.pem",
+                            device_config.device_id
+                        ))?,
+                        identity_pk: aziot_keys_common::PreloadedKeyLocation::Filesystem {
+                            // Leave off the file://, it is automatically added by the serializer
+                            path: format!(
+                                "/etc/aziot/certificates/{}.hub-auth.key.pem",
+                                device_config.device_id
+                            )
+                            .into(),
+                        },
                     },
                 },
-            },
-        };
+            };
 
-        config.aziot.provisioning = aziot_config::Provisioning {
-            provisioning: aziot_config::ProvisioningType::Manual {
-                inner: aziot_config::ManualProvisioning::Explicit {
-                    device_id: device.device.device_id.clone(),
-                    iothub_hostname: self.config.iothub.iothub_hostname.clone(),
-                    authentication,
+            config.aziot.provisioning = aziot_config::Provisioning {
+                provisioning: aziot_config::ProvisioningType::Manual {
+                    inner: aziot_config::ManualProvisioning::Explicit {
+                        device_id: device_config.device_id.clone(),
+                        iothub_hostname: self.config.iothub.iothub_hostname.clone(),
+                        authentication,
+                    },
                 },
-            },
-        };
+            };
 
-        config.aziot.hostname = Some(
-            device
-                .device
-                .hostname
-                .as_deref()
-                .unwrap_or("{{HOSTNAME}}")
-                .to_owned(),
-        );
+            config.aziot.hostname = Some(
+                device_config
+                    .hostname
+                    .as_deref()
+                    .unwrap_or("{{HOSTNAME}}")
+                    .to_owned(),
+            );
 
-        config.aziot.parent_hostname = device.parent.map(|p| {
-            p.hostname
-                .as_deref()
-                .unwrap_or("{{PARENT_HOSTNAME}}")
-                .to_owned()
-        });
+            config.aziot.parent_hostname = device.parent.map(|p| {
+                p.hostname
+                    .as_deref()
+                    .unwrap_or("{{PARENT_HOSTNAME}}")
+                    .to_owned()
+            });
 
-        config.trust_bundle_cert = Some(Url::parse(
-            "file:///etc/aziot/certificates/iotedge_config_cli_root.pem",
-        )?);
+            config.trust_bundle_cert = Some(Url::parse(
+                "file:///etc/aziot/certificates/iotedge_config_cli_root.pem",
+            )?);
 
-        config.edge_ca = Some(iotedge_config::EdgeCa::Explicit {
-            cert: Url::parse(&format!(
-                "file:///etc/aziot/certificates/{}.full-chain.cert.pem",
-                device.device.device_id
-            ))?,
-            pk: Url::parse(&format!(
-                "file:///etc/aziot/certificates/{}.key.pem",
-                device.device.device_id
-            ))?,
-        });
+            config.edge_ca = Some(iotedge_config::EdgeCa::Explicit {
+                cert: Url::parse(&format!(
+                    "file:///etc/aziot/certificates/{}.full-chain.cert.pem",
+                    device_config.device_id
+                ))?,
+                pk: Url::parse(&format!(
+                    "file:///etc/aziot/certificates/{}.key.pem",
+                    device_config.device_id
+                ))?,
+            });
 
-        config.agent.config.image = device
-            .device
-            .edge_agent
-            .as_ref()
-            .unwrap_or(&self.config.configuration.default_edge_agent)
-            .to_owned();
+            config.agent.config.image = device_config
+                .edge_agent
+                .as_ref()
+                .unwrap_or(&self.config.configuration.default_edge_agent)
+                .to_owned();
 
-        config.agent.config.auth = device.device.container_auth.as_ref().and_then(|auth| {
-            serde_json::from_value(serde_json::json! {{
-                "serveraddress": auth.serveraddress,
-                "username": auth.username,
-                "password": auth.password,
-            }})
-            .unwrap()
-        });
+            config.agent.config.auth = device_config.container_auth.as_ref().and_then(|auth| {
+                serde_json::from_value(serde_json::json! {{
+                    "serveraddress": auth.serveraddress,
+                    "username": auth.username,
+                    "password": auth.password,
+                }})
+                .unwrap()
+            });
 
-        let config = toml::to_string(&config)?;
-        let file = self
-            .file_manager
-            .get_folder(&device.device.device_id)
-            .await?
-            .join("config.toml");
-        self.file_manager
-            .print_verbose(format!(
-                "Writing config for {} to {:?}\n{}",
-                device.device.device_id, file, config
-            ))
-            .await?;
+            let config = toml::to_string(&config)?;
+            let file = self
+                .file_manager
+                .get_folder(&device_config.device_id)
+                .await?
+                .join("config.toml");
+            self.file_manager
+                .print_verbose(format!(
+                    "Writing config for {} to {:?}\n{}",
+                    device_config.device_id, file, config
+                ))
+                .await?;
 
-        fs::write(file, config).await?;
+            fs::write(file, config).await?;
+        }
         Ok(())
     }
 }
@@ -1250,7 +1339,7 @@ impl<'a> ScriptManager<'a> {
             .await?;
 
         for device in devices {
-            self.add_install_scripts_internal(&device).await?;
+            self.add_install_scripts_internal(device).await?;
             self.copy_device_readme(device).await?;
         }
 
@@ -1258,85 +1347,112 @@ impl<'a> ScriptManager<'a> {
     }
 
     async fn add_install_scripts_internal(&self, device: &CreatedDevice<'_>) -> Result<()> {
-        let hostname = device.device.hostname.as_deref();
-        let parent_hostname = device.parent.and_then(|p| p.hostname.as_deref());
-        self.file_manager
+        if let DeviceConfig::Edge(device_config) = device.config {
+            let hostname = device_config.hostname.as_deref();
+            let parent_hostname = device.parent.and_then(|p| p.hostname.as_deref());
+            self.file_manager
             .print_verbose(format!(
                 "Adding install script for {} with hostname {:?} and parent hostname {:?}. (If values are none, install script will prompt user for values).",
-                device.device.device_id,
+                device_config.device_id,
                 hostname,
                 parent_hostname
             ))
             .await?;
 
-        let mut script: Vec<&str> = Vec::new();
-        let headers = format!(
-            include_str!(r#"scripts/headers.sh"#),
-            device_id = device.device.device_id
-        );
-        script.push(&headers);
+            let mut script: Vec<&str> = Vec::new();
+            let headers = format!(
+                include_str!(r#"scripts/headers.sh"#),
+                device_id = device_config.device_id
+            );
+            script.push(&headers);
 
-        // Add user prompts if no hostname provided
-        if hostname.is_none() {
-            script.push(include_str!(r#"scripts/set_hostname.sh"#));
+            // Add user prompts if no hostname provided
+            if hostname.is_none() {
+                script.push(include_str!(r#"scripts/set_hostname.sh"#));
+            }
+            if device.parent.is_some() && parent_hostname.is_none() {
+                script.push(include_str!(r#"scripts/set_parent_hostname.sh"#));
+            }
+
+            // Copy certs to /aziot/certificates folder
+            script.push(include_str!(r#"scripts/install_ca_certs.sh"#));
+            if self.config.iothub.authentication_method == config::IoTHubAuthMethod::X509Cert {
+                script.push(include_str!(r#"scripts/install_hub_auth_certs.sh"#));
+            }
+
+            // Run iotedge config apply
+            script.push(include_str!(r#"scripts/apply.sh"#));
+
+            let script: String = script.join("\n\n");
+            let file = self
+                .file_manager
+                .get_folder(&device_config.device_id)
+                .await?
+                .join("install.sh");
+            fs::write(file, script).await?;
         }
-        if device.parent.is_some() && parent_hostname.is_none() {
-            script.push(include_str!(r#"scripts/set_parent_hostname.sh"#));
-        }
-
-        // Copy certs to /aziot/certificates folder
-        script.push(include_str!(r#"scripts/install_ca_certs.sh"#));
-        if self.config.iothub.authentication_method == config::IoTHubAuthMethod::X509Cert {
-            script.push(include_str!(r#"scripts/install_hub_auth_certs.sh"#));
-        }
-
-        // Run iotedge config apply
-        script.push(include_str!(r#"scripts/apply.sh"#));
-
-        let script: String = script.join("\n\n");
-        let file = self
-            .file_manager
-            .get_folder(&device.device.device_id)
-            .await?
-            .join("install.sh");
-        fs::write(file, script).await?;
-
         Ok(())
     }
 
     async fn copy_device_readme(&self, device: &CreatedDevice<'_>) -> Result<()> {
         let file = self
             .file_manager
-            .get_folder(&device.device.device_id)
+            .get_folder(device.config.device_id())
             .await?
             .join("README.md");
-        fs::write(file, include_str!(r#"docs/device_readme.md"#)).await?;
+
+        match device.config {
+            DeviceConfig::Edge(_) => {
+                fs::write(file, include_str!(r#"docs/edge_device_readme.md"#)).await?
+            }
+            DeviceConfig::Leaf(_) => {
+                fs::write(file, include_str!(r#"docs/leaf_device_readme.md"#)).await?
+            }
+        }
 
         Ok(())
     }
 }
 
-async fn visualize_terminal(root: &config::DeviceConfig, file_manager: &FileManager) -> Result<()> {
-    let result = make_tree(root, "")?;
+async fn visualize_terminal(
+    roots: &[config::EdgeDeviceConfig],
+    file_manager: &FileManager,
+) -> Result<()> {
+    let result = roots
+        .iter()
+        .map(|root| make_tree(root, ""))
+        .collect::<Result<Vec<String>>>()?
+        .join("\n");
     file_manager.print(&result).await?;
     fs::write(file_manager.base_path().join("visualization.txt"), result).await?;
 
     Ok(())
 }
 
-fn make_tree(device: &config::DeviceConfig, prefix: &str) -> Result<String> {
+fn make_tree(device: &config::EdgeDeviceConfig, prefix: &str) -> Result<String> {
     let mut result: Vec<String> = vec![device.device_id.clone(), "\n".to_owned()];
 
-    let num_children = device.children.len();
-    for (i, child) in device.children.iter().enumerate() {
-        let is_last = i + 1 == num_children;
+    let mut num_children = device.children.len() + device.leaves.len();
+    for child in &device.children {
+        num_children -= 1;
+        let is_last = num_children == 0;
+
         let node_prefix = if is_last { "└──" } else { "├──" };
         let node_prefix = [prefix, node_prefix].concat();
         result.push(node_prefix);
 
         let child_prefix = if is_last { "    " } else { "│   " };
         let child_prefix = [prefix, child_prefix].concat();
-        result.push(make_tree(&child, &child_prefix)?);
+        result.push(make_tree(child, &child_prefix)?);
+    }
+
+    for leaf in &device.leaves {
+        num_children -= 1;
+        let is_last = num_children == 0;
+
+        let node_prefix = if is_last { "└──" } else { "├──" };
+        let leaf = [prefix, node_prefix, "*", &leaf.device_id, "\n"].concat();
+        result.push(leaf);
     }
 
     Ok(result.concat())
@@ -1381,51 +1497,61 @@ mod tests {
             .await
             .expect("Could not make all certs");
 
-        let make_auth_certs = FlatenedDevice::flatten_devices(&config.root_device)
+        let make_auth_certs = FlatenedDevice::flatten_devices(&config.root_devices)
             .into_iter()
-            .map(|device| cert_manager.make_hub_auth_cert(&device.device.device_id));
+            .map(|device| cert_manager.make_hub_auth_cert(device.config.device_id()));
         futures::future::join_all(make_auth_certs)
             .await
             .into_iter()
             .collect::<Result<Vec<PathBuf>>>()
             .expect("Could not make all hub auth certs");
 
-        let validate_certs = FlatenedDevice::flatten_devices(&config.root_device)
-            .into_iter()
-            .map(|device| {
-                validate_created_certs(&file_manager, &cert_manager, &device.device.device_id)
-            });
+        let devices = FlatenedDevice::flatten_devices(&config.root_devices);
+        let validate_certs = devices
+            .iter()
+            .map(|device| validate_created_certs(&file_manager, &cert_manager, &device.config));
         futures::future::join_all(validate_certs).await;
     }
 
     async fn validate_created_certs(
         file_manager: &FileManager,
         cert_manager: &CertManager<'_>,
-        device_id: &str,
+        config: &DeviceConfig<'_>,
     ) {
-        println!("Validating {}'s certs", device_id);
-        let dir = file_manager.get_folder(device_id).await.unwrap();
+        println!("Validating {}'s certs", config.device_id());
+        let dir = file_manager.get_folder(config.device_id()).await.unwrap();
 
-        assert!(dir.join(format!("{}.cert.pem", device_id)).exists());
-        assert!(dir.join(format!("{}.key.pem", device_id)).exists());
+        // Validate Trust Bundle
+        let trust_bundle = dir.join("trust_bundle.pem");
+        assert!(trust_bundle.exists());
 
-        let chain = dir.join(format!("{}.full-chain.cert.pem", device_id));
-        assert!(chain.exists());
+        let server_cert = dir.join(format!("{}.cert.pem", config.device_id()));
+        let server_key = dir.join(format!("{}.key.pem", config.device_id()));
+        let chain = dir.join(format!("{}.full-chain.cert.pem", config.device_id()));
+        match config {
+            DeviceConfig::Edge(_) => {
+                assert!(server_cert.exists());
+                assert!(server_key.exists());
+                assert!(chain.exists());
 
-        let root = dir.join("iotedge_config_cli_root.pem");
-        assert!(root.exists());
-
-        let verify = cert_manager
-            .openssl_command()
-            .arg("verify")
-            .args(&[OsStr::new("-CAfile"), root.as_os_str()])
-            .arg(chain.as_os_str())
-            .spawn()
-            .expect("Could not shell out to openssl")
-            .wait()
-            .await
-            .expect("Could not shell out to openssl");
-        assert!(verify.success());
+                let verify = cert_manager
+                    .openssl_command()
+                    .arg("verify")
+                    .args(&[OsStr::new("-CAfile"), trust_bundle.as_os_str()])
+                    .arg(chain.as_os_str())
+                    .spawn()
+                    .expect("Could not shell out to openssl")
+                    .wait()
+                    .await
+                    .expect("Could not shell out to openssl");
+                assert!(verify.success());
+            }
+            DeviceConfig::Leaf(_) => {
+                assert!(!server_cert.exists());
+                assert!(!server_key.exists());
+                assert!(!chain.exists());
+            }
+        }
     }
 
     #[tokio::test]
