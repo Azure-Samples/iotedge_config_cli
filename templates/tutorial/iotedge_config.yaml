@@ -14,7 +14,7 @@ iothub:
 ## IoT Edge configuration template to use
 configuration:
   template_config_path: "./templates/tutorial/device_config.toml"
-  default_edge_agent: "$upstream:8000/azureiotedge-agent:1.2"
+  default_edge_agent: "$upstream:443/azureiotedge-agent:1.2"
 
 ## Hierarchy of IoT Edge devices to create
 edgedevices:
