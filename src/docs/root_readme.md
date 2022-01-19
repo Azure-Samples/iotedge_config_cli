@@ -1,8 +1,6 @@
 # Prerequisites
 Each device must have IoT Edge (must be v1.2 or later) installed. Pick the [supported OS](https://docs.microsoft.com/en-us/azure/iot-edge/support?view=iotedge-2020-11) and follow the [tutorial](https://docs.microsoft.com/en-us/azure/iot-edge/support?view=iotedge-2020-11) to install Azure IoT Edge.
 
-Alternatively, if the OS is Tier1 supported OS and using DPS SAS Key provisioning, run [this installation script](https://github.com/Azure/iot-edge-config) can reduce the steps to install and provision.
-
 # Steps
 
 1. After install and configure IoT Edge to Azure IoT Hub or Azure IoT Central, copy the zip file for each device created, named [[device-id]].zip. 
