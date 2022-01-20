@@ -1,9 +1,18 @@
-# Usage
-This folder contains a zip file for each device created, named [[device-id]].zip. Transfer each zip to its respective device. A good option for this is to use [scp](https://man7.org/linux/man-pages/man1/scp.1.html).
+# Prerequisites
+Each device must have IoT Edge (must be v1.2 or later) installed. Pick the [supported OS](https://docs.microsoft.com/en-us/azure/iot-edge/support?view=iotedge-2020-11) and follow the [tutorial](https://docs.microsoft.com/en-us/azure/iot-edge/support?view=iotedge-2020-11) to install Azure IoT Edge.
 
-Each device must have iotedge installed. [[TODO: Link iotedge install docs here]]
+# Steps
 
-Once the zip folder is on the device, unzip it using unzip. You may need to install [unzip](https://linux.die.net/man/1/unzip).
+1. After install and configure IoT Edge to Azure IoT Hub or Azure IoT Central, copy the zip file for each device created, named [[device-id]].zip. 
+2. Transfer each zip to its respective device. A good option for this is to use [scp](https://man7.org/linux/man-pages/man1/scp.1.html).
+3. Unzip the zip file by running following commands
 
-## Install Script
-Once the folder is unziped, cd into the directory and run `./install.sh`. This will copy certificates, configure iot edge, and restart iotedge.
+```Unzip
+    sudo apt install zip
+    unzip ~/<PATH_TO_CONFIGURATION_BUNDLE>/<CONFIGURATION_BUNDLE>.zip
+```
+4. Run the script
+```Run
+    sudo ./install.sh
+```
+5. Follow the prompt by entering the hostname (FQDN or IP address). On the parent device, it will prompt the hostname and on the child deivce, it will prompt both the hostname of the child and parent device.
