@@ -17,4 +17,5 @@ Alternatively, if the OS is Tier1 supported OS and using DPS SAS Key provisionin
 ```Run
     sudo ./install.sh
 ```
-5. Follow the prompt by entering the hostname (FQDN or IP address). On the parent device, it will prompt the hostname and on the child deivce, it will prompt both the hostname of the child and parent device.
+5. If the hostname was not provided in the configuration file, it will prompt for hostname. Follow the prompt by entering the hostname (FQDN or IP address). On the parent device, it may prompt its own hostname and on the child deivce, it may prompt the hostname of both the child and parent device.
+
