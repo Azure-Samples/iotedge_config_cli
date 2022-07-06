@@ -1,6 +1,20 @@
 # ======================= Install nested root CA =======================================
-cp iotedge_config_cli_root.pem /usr/local/share/ca-certificates/iotedge_config_cli_root.pem.crt
-update-ca-certificates
+if [ -f /etc/os-release ]
+then
+        . /etc/os-release
+        if [[ "$NAME" == "Common Base Linux Mariner"* ]];
+        then
+                cp iotedge_config_cli_root.pem /etc/pki/ca-trust/source/anchors/iotedge_config_cli_root.pem.crt
+                update-ca-trust
+        else
+                cp iotedge_config_cli_root.pem /usr/local/share/ca-certificates/iotedge_config_cli_root.pem.crt
+                update-ca-certificates
+        fi
+else
+        cp iotedge_config_cli_root.pem /usr/local/share/ca-certificates/iotedge_config_cli_root.pem.crt
+        update-ca-certificates
+fi
+
 systemctl restart docker
 
 # ======================= Copy device certs  =======================================
